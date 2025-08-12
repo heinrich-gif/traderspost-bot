@@ -1,35 +1,39 @@
-name: Scan -> KI -> Order (5 min)
+name: Scan -> KI -> Order (alle 5 Min)
 
 on:
   schedule:
-    - cron: "*/5 * * * *"   # alle 5 Minuten (UTC) – läuft rund um die Uhr
+    - cron: "*/5 * * * *"   # alle 5 Minuten (UTC)
   workflow_dispatch: {}      # manueller Start möglich
+
+concurrency:
+  group: traderspost-bot-${{ github.ref }}
+  cancel-in-progress: true   # verhindert überlappende Läufe
 
 jobs:
   run-scan:
     runs-on: ubuntu-latest
+    timeout-minutes: 12
     permissions:
       contents: read
       actions: read
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Show files
+      - name: Show files (pre)
         run: |
           pwd
           ls -la
-          echo "--- tickers.txt ---"
-          test -f tickers.txt && cat tickers.txt || echo "tickers.txt fehlt!"
 
-      - name: Restore state cache
+      # Optional: Python-Paket-Cache (beschleunigt Läufe)
+      - name: Cache pip
         uses: actions/cache@v4
         with:
-          path: state
-          key: state-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+          path: ~/.cache/pip
+          key: pip-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
           restore-keys: |
-            state-${{ runner.os }}-${{ github.ref_name }}-
-            state-${{ runner.os }}-
+            pip-${{ runner.os }}-
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -41,24 +45,53 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # Hält Cooldown/Signal-Status über Läufe hinweg
+      - name: Restore state cache
+        uses: actions/cache@v4
+        with:
+          path: state
+          key: state-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            state-${{ runner.os }}-${{ github.ref_name }}-
+            state-${{ runner.os }}-
+
+      # ---- Penny-Scanner (Finviz) generiert tickers.txt vor jedem Lauf ----
+      # Schwellwerte kannst du in Repo-Variablen anpassen: Settings -> Secrets and variables -> Actions -> Variables
+      - name: Scan Penny Stocks (Finviz)
+        env:
+          PENNY_PRICE_MAX:      ${{ vars.PENNY_PRICE_MAX        || '5' }}
+          PENNY_REL_VOL_MIN:    ${{ vars.PENNY_REL_VOL_MIN      || '2' }}
+          PENNY_AVG_VOL_MIN:    ${{ vars.PENNY_AVG_VOL_MIN      || '500000' }}
+          PENNY_RANGE_PCT_MIN:  ${{ vars.PENNY_RANGE_PCT_MIN    || '5' }}
+          PENNY_MAX_TICKERS:    ${{ vars.PENNY_MAX_TICKERS      || '30' }}
+          PENNY_YF_PERIOD:      ${{ vars.PENNY_YF_PERIOD        || '5d' }}
+          PENNY_YF_INTERVAL:    ${{ vars.PENNY_YF_INTERVAL      || '1d' }}
+        run: |
+          python scan_pennystocks_finviz.py
+
+      - name: Show tickers
+        run: |
+          echo "--- tickers.txt ---"
+          test -f tickers.txt && cat tickers.txt || echo "tickers.txt fehlt!"
+
+      # ---- Bot-Parameter zusammensetzen ----
       - name: Configure env
         run: |
-          echo "KI_MODE=webhook" >> $GITHUB_ENV
-          echo "TIMEFRAME=${{ vars.TIMEFRAME }}" >> $GITHUB_ENV
-          echo "POSITION_QTY=${{ vars.POSITION_QTY }}" >> $GITHUB_ENV
-          echo "RSI_LEN=${{ vars.RSI_LEN }}" >> $GITHUB_ENV
-          echo "EMA_FAST=${{ vars.EMA_FAST }}" >> $GITHUB_ENV
-          echo "EMA_SLOW=${{ vars.EMA_SLOW }}" >> $GITHUB_ENV
-          echo "RSI_BUY_CROSS=${{ vars.RSI_BUY_CROSS }}" >> $GITHUB_ENV
-          echo "RSI_SELL_CROSS=${{ vars.RSI_SELL_CROSS }}" >> $GITHUB_ENV
-          echo "COOLDOWN_MIN=${{ vars.COOLDOWN_MIN }}" >> $GITHUB_ENV
-          # Secrets
+          echo "PYTHONUNBUFFERED=1" >> $GITHUB_ENV
+          echo "KI_MODE=${{ vars.KI_MODE || 'webhook' }}" >> $GITHUB_ENV
+          echo "TIMEFRAME=${{ vars.TIMEFRAME || '5m' }}" >> $GITHUB_ENV
+          echo "POSITION_QTY=${{ vars.POSITION_QTY || '10' }}" >> $GITHUB_ENV
+          echo "RSI_LEN=${{ vars.RSI_LEN || '14' }}" >> $GITHUB_ENV
+          echo "EMA_FAST=${{ vars.EMA_FAST || '50' }}" >> $GITHUB_ENV
+          echo "EMA_SLOW=${{ vars.EMA_SLOW || '200' }}" >> $GITHUB_ENV
+          echo "RSI_BUY_CROSS=${{ vars.RSI_BUY_CROSS || '30' }}" >> $GITHUB_ENV
+          echo "RSI_SELL_CROSS=${{ vars.RSI_SELL_CROSS || '70' }}" >> $GITHUB_ENV
+          echo "COOLDOWN_MIN=${{ vars.COOLDOWN_MIN || '60' }}" >> $GITHUB_ENV
+          # Secrets (Pflicht: KI_WEBHOOK_URL; optional: TP_WEBHOOK_URL für Failover)
           echo "KI_WEBHOOK_URL=${{ secrets.KI_WEBHOOK_URL }}" >> $GITHUB_ENV
           echo "TP_WEBHOOK_URL=${{ secrets.TP_WEBHOOK_URL }}" >> $GITHUB_ENV
 
-      - name: Run bot (unbuffered)
-        env:
-          PYTHONUNBUFFERED: "1"
+      - name: Run bot
         run: |
           python -V
           echo ">>> Starting main.py …"
@@ -71,8 +104,8 @@ jobs:
           path: state
           key: state-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
 
-# Tipp: Nur während US-Handelszeiten laufen lassen (spart Minuten):
+# ---- Alternative: nur während US-Handelszeiten laufen lassen (empfohlen, spart Minuten) ----
 # on:
 #   schedule:
-#     - cron: "*/5 13-20 * * 1-5"   # Mo–Fr 13–20 UTC (Sommerzeit grob RTH)
+#     - cron: "*/5 13-20 * * 1-5"   # Mo–Fr 13–20 UTC ~ RTH grob (Sommerzeit beachten)
 #   workflow_dispatch: {}
