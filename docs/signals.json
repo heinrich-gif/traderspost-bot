@@ -1,11 +1,12 @@
 {
-  "generated_at": "2025-08-12T08:08:16.464103+00:00",
+  "generated_at": "2025-08-12T08:23:59.374844+00:00",
   "timeframe": "5m",
   "breakout_len": 20,
   "min_pct_move": 5.0,
   "min_rsi_mom": 50.0,
   "ki": {
-    "scorer_url_set": false
+    "scorer_url_set": false,
+    "min_score": 65
   },
   "signals": [
     {
@@ -19,7 +20,8 @@
       "recommendation": "HOLD",
       "qty": 0,
       "ki_score": null,
-      "timestamp": "2025-08-12T08:08:10.433193+00:00",
+      "ki_pass": true,
+      "timestamp": "2025-08-12T08:23:52.136016+00:00",
       "spark": [
         4.8982,
         4.885,
@@ -84,7 +86,8 @@
       "recommendation": "HOLD",
       "qty": 0,
       "ki_score": null,
-      "timestamp": "2025-08-12T08:08:10.817379+00:00",
+      "ki_pass": true,
+      "timestamp": "2025-08-12T08:23:52.746026+00:00",
       "spark": [
         4.27,
         4.24,
@@ -149,7 +152,8 @@
       "recommendation": "HOLD",
       "qty": 0,
       "ki_score": null,
-      "timestamp": "2025-08-12T08:08:11.191061+00:00",
+      "ki_pass": true,
+      "timestamp": "2025-08-12T08:23:53.277638+00:00",
       "spark": [
         4.41,
         4.455,
@@ -214,7 +218,8 @@
       "recommendation": "HOLD",
       "qty": 0,
       "ki_score": null,
-      "timestamp": "2025-08-12T08:08:11.572547+00:00",
+      "ki_pass": true,
+      "timestamp": "2025-08-12T08:23:53.960957+00:00",
       "spark": [
         3.57,
         3.585,
@@ -279,7 +284,8 @@
       "recommendation": "HOLD",
       "qty": 0,
       "ki_score": null,
-      "timestamp": "2025-08-12T08:08:11.985740+00:00",
+      "ki_pass": true,
+      "timestamp": "2025-08-12T08:23:54.548887+00:00",
       "spark": [
         2.7397,
         2.755,
@@ -344,7 +350,8 @@
       "recommendation": "HOLD",
       "qty": 0,
       "ki_score": null,
-      "timestamp": "2025-08-12T08:08:12.375243+00:00",
+      "ki_pass": true,
+      "timestamp": "2025-08-12T08:23:55.232421+00:00",
       "spark": [
         3.325,
         3.33,
@@ -409,7 +416,8 @@
       "recommendation": "HOLD",
       "qty": 0,
       "ki_score": null,
-      "timestamp": "2025-08-12T08:08:12.706506+00:00",
+      "ki_pass": true,
+      "timestamp": "2025-08-12T08:23:55.692686+00:00",
       "spark": [
         2.8357,
         2.85,
@@ -474,7 +482,8 @@
       "recommendation": "HOLD",
       "qty": 0,
       "ki_score": null,
-      "timestamp": "2025-08-12T08:08:13.061624+00:00",
+      "ki_pass": true,
+      "timestamp": "2025-08-12T08:23:56.247109+00:00",
       "spark": [
         5.019,
         5.025,
@@ -539,7 +548,8 @@
       "recommendation": "HOLD",
       "qty": 0,
       "ki_score": null,
-      "timestamp": "2025-08-12T08:08:13.564428+00:00",
+      "ki_pass": true,
+      "timestamp": "2025-08-12T08:23:56.742195+00:00",
       "spark": [
         4.16,
         4.12,
@@ -604,7 +614,8 @@
       "recommendation": "HOLD",
       "qty": 0,
       "ki_score": null,
-      "timestamp": "2025-08-12T08:08:13.917861+00:00",
+      "ki_pass": true,
+      "timestamp": "2025-08-12T08:23:57.241735+00:00",
       "spark": [
         2.745,
         2.745,
@@ -669,7 +680,8 @@
       "recommendation": "HOLD",
       "qty": 0,
       "ki_score": null,
-      "timestamp": "2025-08-12T08:08:14.261532+00:00",
+      "ki_pass": true,
+      "timestamp": "2025-08-12T08:23:57.742293+00:00",
       "spark": [
         3.0546,
         3.075,
@@ -734,7 +746,8 @@
       "recommendation": "HOLD",
       "qty": 0,
       "ki_score": null,
-      "timestamp": "2025-08-12T08:08:14.576867+00:00",
+      "ki_pass": true,
+      "timestamp": "2025-08-12T08:23:58.229808+00:00",
       "spark": [
         2.845,
         2.875,
@@ -799,7 +812,8 @@
       "recommendation": "HOLD",
       "qty": 0,
       "ki_score": null,
-      "timestamp": "2025-08-12T08:08:15.975579+00:00",
+      "ki_pass": true,
+      "timestamp": "2025-08-12T08:23:58.730365+00:00",
       "spark": [
         3.07,
         3.085,
@@ -864,7 +878,8 @@
       "recommendation": "HOLD",
       "qty": 0,
       "ki_score": null,
-      "timestamp": "2025-08-12T08:08:16.313450+00:00",
+      "ki_pass": true,
+      "timestamp": "2025-08-12T08:23:59.224260+00:00",
       "spark": [
         4.56,
         4.575,
