@@ -1,116 +1,129 @@
-#!/usr/bin/env python3
-import os, re, time, json
+# scan_pennystocks_finviz.py
+import os
+import time
+import math
 import requests
-from bs4 import BeautifulSoup
+import pandas as pd
 import yfinance as yf
+from bs4 import BeautifulSoup
 
-# ---- Parameter (ENV) ----
-PRICE_MIN        = float(os.getenv("PENNY_PRICE_MIN", "0.2"))
-PRICE_MAX        = float(os.getenv("PENNY_PRICE_MAX", "6"))          # 6, damit 5.xx mit reinkommt
-AVG_VOL_MIN      = int(os.getenv("PENNY_AVG_VOL_MIN", "150000"))      # etwas lockerer
-REL_VOL_MIN      = float(os.getenv("PENNY_REL_VOL_MIN", "1.2"))       # >1.0 = heute mehr als Schnitt
-MAX_TICKERS      = int(os.getenv("PENNY_MAX_TICKERS", "40"))
-YF_PERIOD        = os.getenv("PENNY_YF_PERIOD", "5d")
-YF_INTERVAL      = os.getenv("PENNY_YF_INTERVAL", "1d")
+# -------- Parameter (per GitHub Vars leicht änderbar) --------
+PRICE_MAX = float(os.getenv("PENNY_PRICE_MAX", "10"))          # <= 105$
+REL_VOL_MIN = float(os.getenv("PENNY_REL_VOL_MIN", "1"))      # Relative Volume >= 3 (Finviz-Filter)
+AVG_VOL_MIN = int(os.getenv("PENNY_AVG_VOL_MIN", "100000"))   # Avg Volume >= 1M (Finviz-Filter)
+RANGE_PCT_MIN = float(os.getenv("PENNY_RANGE_PCT_MIN", "5"))  # Zusätzliche Validierung per yfinance
+MAX_TICKERS = int(os.getenv("PENNY_MAX_TICKERS", "50"))       # Begrenzung für tickers.txt
+YF_PERIOD = os.getenv("PENNY_YF_PERIOD", "5d")                # 5d/10d
+YF_INTERVAL = os.getenv("PENNY_YF_INTERVAL", "1d")            # 1d
 
-# Nur FINVIZ
-FINVIZ_FILTERS   = os.getenv("FINVIZ_FILTERS", "")  # optional zusätzl. finviz f= Filter (CSV)
-EXTRA_TICKERS    = os.getenv("EXTRA_TICKERS", "")   # CSV, um manuell zu ergänzen
+# Exch-Filter: NASDAQ/NYSE/AMEX (kein OTC)
+FINVIZ_BASE = (
+    "https://finviz.com/screener.ashx?"
+    "v=111&ft=4"  # Tabelle mit vielen Spalten, fund/tech gemischt
+    "&f=exch_amex,exch_nasd,exch_nyse"
+    ",sh_price_u{price_max}"
+    ",sh_relvol_o{rel_vol_min}"
+    ",sh_avgvol_o{avg_vol_min}"
+    "&o=-relativevolume"  # sortiere absteigend nach RelVol
+)
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Referer": "https://finviz.com/",
+}
 
-OUTFILE          = "tickers.txt"
-DEBUG_JSON       = "scan_debug.json"
-UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) FinvizPennyScanner/1.0"}
-
-TICKER_RE = re.compile(r"^[A-Z]{1,5}(\.[A-Z])?$")
-
-def log(msg): print(msg, flush=True)
-
-def finviz_tickers():
-    # Basisfilter: Preis <= PRICE_MAX, AvgVol >= AVG_VOL_MIN, RelVol >= REL_VOL_MIN
-    f = [
-        f"sh_price_u{int(PRICE_MAX)}",
-        f"sh_avgvol_o{int(AVG_VOL_MIN)}",
-        f"sh_relvol_o{REL_VOL_MIN}",
-    ]
-    if FINVIZ_FILTERS.strip():
-        f += [x.strip() for x in FINVIZ_FILTERS.split(",") if x.strip()]
-    url = f"https://finviz.com/screener.ashx?v=111&f={','.join(f)}&o=-change"
-    log(f"[FINVIZ] URL: {url}")
-    try:
-        r = requests.get(url, headers=UA, timeout=15)
-        r.raise_for_status()
-    except Exception as e:
-        log(f"[FINVIZ] fetch error: {e}")
-        return []
-    soup = BeautifulSoup(r.text, "html.parser")
+def finviz_list():
+    url = FINVIZ_BASE.format(
+        price_max=int(PRICE_MAX),
+        rel_vol_min=int(REL_VOL_MIN),
+        avg_vol_min=int(AVG_VOL_MIN/1000)*1000  # runde etwas
+    )
     tickers = []
-    for a in soup.select("a.screener-link-primary"):
-        t = a.get_text(strip=True).upper()
-        if TICKER_RE.match(t):
-            tickers.append(t)
-    # Dedupe, Reihenfolge bewahren
-    return list(dict.fromkeys(tickers))
+    page = 0
+    while True:
+        start = page * 20 + 1  # Finviz paginiert 20/Seite: r=1,21,41,...
+        paged = url + f"&r={start}"
+        resp = requests.get(paged, headers=HEADERS, timeout=20)
+        if resp.status_code != 200:
+            if page == 0:
+                raise RuntimeError(f"Finviz HTTP {resp.status_code}")
+            break
+        soup = BeautifulSoup(resp.text, "lxml")
+        # Alle Ticker-Links im Table erkennen:
+        anchors = soup.select("a.screener-link-primary")
+        # Falls Finviz Layout wechselt, fallback:
+        if not anchors:
+            anchors = soup.select("td a[href*='quote.ashx?t=']")
+        page_tickers = []
+        for a in anchors:
+            sym = a.get_text(strip=True)
+            if sym and sym.isupper() and len(sym) <= 6 and sym.isalpha():
+                page_tickers.append(sym)
+        # Duplikate weg:
+        page_tickers = [t for t in page_tickers if t not in tickers]
+        if not page_tickers:
+            break
+        tickers.extend(page_tickers)
+        # Max. 5 Seiten (100 Ticker) abklappern:
+        page += 1
+        if page >= 5:
+            break
+        time.sleep(0.8)  # freundlich drosseln
+    return tickers
 
-def yf_validate(tickers):
-    out = []
-    for t in tickers:
+def validate_with_yf(cands):
+    """
+    Filtert mit yfinance nach tatsächlicher Intraday/Day-Range und Liquidität.
+    RANGE_PCT_MIN: (High-Low)/Close * 100 der letzten Kerze
+    """
+    final = []
+    for t in cands:
         try:
-            df = yf.download(
-                t, period=YF_PERIOD, interval=YF_INTERVAL,
-                progress=False, auto_adjust=True, prepost=True,
-                group_by="column", threads=False
-            )
+            df = yf.download(t, period=YF_PERIOD, interval=YF_INTERVAL, progress=False, auto_adjust=True)
             if df is None or df.empty:
                 continue
-            price = float(df["Close"].iloc[-1])
-            vols = df["Volume"].dropna()
-            if vols.empty:
+            row = df.iloc[-1]
+            close = float(row["Close"])
+            high = float(row["High"])
+            low = float(row["Low"])
+            vol = int(row.get("Volume", 0))
+            if close <= 0:
                 continue
-            avg_vol = float(vols.mean())
-            last_vol = float(vols.iloc[-1])
-            rel_vol = (last_vol / avg_vol) if avg_vol > 0 else 1.0
-
-            # endgültige Filter (untere Preisgrenze hier anwenden)
-            if not (PRICE_MIN <= price <= PRICE_MAX):
-                continue
-            if avg_vol < AVG_VOL_MIN:
-                continue
-            if rel_vol < REL_VOL_MIN:
-                continue
-
-            out.append((t, price, avg_vol, rel_vol))
+            day_range_pct = (high - low) / close * 100.0
+            # harte Regeln: Penny, Liquid, Volatil
+            if close <= PRICE_MAX and vol >= AVG_VOL_MIN and day_range_pct >= RANGE_PCT_MIN:
+                final.append((t, close, vol, round(day_range_pct, 2)))
         except Exception as e:
-            log(f"[YF] {t} error: {e}")
-        time.sleep(0.05)
-    # Sortiere nach RelVol, dann AvgVol
-    out.sort(key=lambda x: (x[3], x[2]), reverse=True)
-    return out
-
-def parse_extra(csv_):
-    return [x.strip().upper() for x in csv_.split(",") if TICKER_RE.match(x.strip().upper())]
+            print(f"[WARN] yfinance {t}: {e}")
+        time.sleep(0.15)
+    # sortiere volatilste zuerst
+    final.sort(key=lambda x: x[3], reverse=True)
+    return [x[0] for x in final[:MAX_TICKERS]]
 
 def main():
-    base = finviz_tickers()
-    log(f"[FINVIZ] Roh: {len(base)}")
-    # Optional manuell ergänzen (z. B. PRPH,XFOR,ZENA,RMBL,ANY)
-    base = list(dict.fromkeys(base + parse_extra(EXTRA_TICKERS)))
+    print(f"[SCAN] Finviz… price<=${PRICE_MAX} relvol>={REL_VOL_MIN} avgvol>={AVG_VOL_MIN}")
+    raw = finviz_list()
+    print(f"[SCAN] Finviz-Kandidaten: {len(raw)} -> {raw[:20]}{' …' if len(raw)>20 else ''}")
 
-    if not base:
-        open(OUTFILE, "w").close()
-        log("[DONE] keine Ticker gefunden.")
-        return
+    if not raw:
+        # Safety: falls Finviz nichts liefert, fallback auf kleine Watchlist
+        fallback = ["SGBX","PHUN","COSM","CEI","BBIG","BNGO"]
+        print("[SCAN] Finviz leer – fallback:", fallback)
+        raw = fallback
 
-    validated = yf_validate(base)
-    final = [t for t, _, _, _ in validated[:MAX_TICKERS]]
+    print(f"[SCAN] yfinance-Validierung (RANGE_PCT_MIN={RANGE_PCT_MIN}%) …")
+    final_tickers = validate_with_yf(raw)
+    print(f"[SCAN] final: {final_tickers}")
 
-    with open(OUTFILE, "w") as f:
-        f.write("\n".join(final))
-    with open(DEBUG_JSON, "w") as f:
-        json.dump(
-            [{"ticker": t, "price": p, "avg_vol": int(av), "rel_vol": round(rv,2)} for t, p, av, rv in validated],
-            f, indent=2
-        )
-    log(f"[DONE] tickers.txt: {len(final)} Ticker → {final}")
+    with open("tickers.txt", "w") as f:
+        for t in final_tickers:
+            f.write(t + "\n")
+
+    if not final_tickers:
+        # leeres File vermeiden: schreibe wenigstens 1 Dummy (kein Trade, aber Bot läuft)
+        with open("tickers.txt", "w") as f:
+            f.write("SGBX\n")
+        print("[SCAN] Achtung: kein Kandidat nach Validierung – SGBX als Platzhalter gesetzt.")
 
 if __name__ == "__main__":
     main()
