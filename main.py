@@ -141,8 +141,14 @@ def score_with_ki(symbol: str, price: float, rsi_now: float, pct_move: float, br
 
 # ========= KI-Analyse (SL/TP/Trailing/Qty) =========
 def analyze_with_ki(signal: dict) -> dict:
+    """
+    Ruft den KI-Worker (KI_WEBHOOK_URL) auf und erwartet:
+      { ok: true, result: { sl_percent,tp_percent,trailing_percent, sl_price,tp_price, qty_sized, ... } }
+    Fällt bei Fehlern still auf {} zurück.
+    """
     if not KI_WEBHOOK_URL:
         return {}
+
     payload = {
         "symbol": signal["symbol"],
         "price": signal["price"],
@@ -153,24 +159,55 @@ def analyze_with_ki(signal: dict) -> dict:
         "momentum": signal["momentum"],
         "equity": ACCOUNT_EQUITY,
         "risk_pct": RISK_PCT,
+        "spark": signal.get("spark", []),   # <<< wichtig für Volatilität
     }
-    try:
-        r = requests.post(KI_WEBHOOK_URL, json=payload, timeout=15)
-        if not r.ok:
-            print(f"[KI-ANALYSE] HTTP {r.status_code}: {r.text[:160]}")
-            return {}
-        data = r.json()
-        res = data.get("result")
-        if isinstance(res, list) and res:
-            return res[0]
-        if isinstance(res, dict):
-            return res
-        if isinstance(data, dict) and "sl_price" in data:
-            return data
-        return {}
-    except Exception as e:
-        print(f"[KI-ANALYSE] error: {e}")
-        return {}
+
+    # kleiner Retry bei Netz-/Timeout-Fehlern
+    for attempt in range(2):
+        try:
+            r = requests.post(KI_WEBHOOK_URL, json=payload, timeout=15)
+            if not r.ok:
+                print(f"[KI-ANALYSE] HTTP {r.status_code}: {r.text[:200]}")
+                return {}
+            data = r.json()
+            res = data.get("result") or data  # falls der Worker direkt das Objekt liefert
+
+            # Minimal-Validierung
+            if not isinstance(res, dict):
+                print("[KI-ANALYSE] invalid response shape")
+                return {}
+
+            # Nur die Felder übernehmen, die wir kennen
+            allowed = {
+                "sl_percent", "tp_percent", "trailing_percent",
+                "sl_price", "tp_price",
+                "qty_sized",
+                "equity_used", "risk_pct_used",
+                "ki_score", "ki_min", "ki_pass",
+                "rationale", "analyzed_at"
+            }
+            out = {k: v for k, v in res.items() if k in allowed}
+
+            # Guardrails (nie TP < SL / nie negative Werte)
+            slp = float(out.get("sl_percent") or 0) or None
+            tpp = float(out.get("tp_percent") or 0) or None
+            trp = float(out.get("trailing_percent") or 0) or None
+            if slp is not None and slp < 0: slp = None
+            if tpp is not None and tpp < 0: tpp = None
+            if trp is not None and trp < 0: trp = None
+            if slp and tpp and tpp <= slp * 1.2:  # min RR ~1.2:1
+                tpp = round(slp * 1.6, 2)
+            if slp is not None: out["sl_percent"] = slp
+            if tpp is not None: out["tp_percent"] = tpp
+            if trp is not None: out["trailing_percent"] = trp
+
+            return out
+
+        except requests.RequestException as e:
+            print(f"[KI-ANALYSE] attempt {attempt+1} error: {e}")
+            time.sleep(0.6)
+
+    return {}
 
 
 # ========= Exit-State (persistente Positionsverwaltung) =========
