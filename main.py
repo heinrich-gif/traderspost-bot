@@ -20,6 +20,15 @@ TOLERANCE_PCT = float(os.getenv("NEAR_BREAKOUT_PCT", "0.3"))  # 0.3%
 RSI_BUY_MAX   = float(os.getenv("BUY_RSI_MAX", "70"))
 DELTA_MIN     = float(os.getenv("BUY_DELTA_MIN", "0.0"))      # Mindest-Δ% für Momentum
 
+# KI + Risk
+KI_WEBHOOK_URL = os.getenv("KI_WEBHOOK_URL", "").strip()
+ACCOUNT_EQUITY = float(os.getenv("ACCOUNT_EQUITY", "10000"))
+RISK_PCT       = float(os.getenv("RISK_PCT", "1.0"))  # in %
+
+# TradersPost Webhook (optional)
+TP_WEBHOOK_URL = os.getenv("TP_WEBHOOK_URL", "").strip()
+DEFAULT_QTY    = int(os.getenv("POSITION_QTY", "10"))
+
 TICKERS_FILE  = Path("tickers.txt")
 STATE_FILE    = Path("state/signals.json")
 
@@ -31,9 +40,6 @@ def log(msg: str) -> None:
     print(f"[{now_utc_iso()}] {msg}", flush=True)
 
 def to_float_scalar(x) -> float:
-    """
-    Wandelt ein beliebiges Pandas/NumPy-Scalar in float um.
-    """
     try:
         if hasattr(x, "item"):
             return float(x.item())
@@ -42,11 +48,12 @@ def to_float_scalar(x) -> float:
         return float("nan")
 
 def series_last_float(s: pd.Series, idx: int = -1) -> float:
-    """
-    Sichere letzte(n) Wert(e) aus einer Series als float.
-    """
     v = s.iloc[idx]
     return to_float_scalar(v)
+
+def last_n_closes(df: pd.DataFrame, n: int = 50):
+    s = pd.to_numeric(df["Close"], errors="coerce").tail(n)
+    return [round(float(x), 6) for x in s.tolist()]
 
 # ===================== Tickerquelle =====================
 def get_tickers_from_file() -> list[str]:
@@ -67,17 +74,11 @@ HEADERS = {
 
 def scan_finviz(price_max=PRICE_MAX, relvol_min=RELVOL_MIN, avgvol_min=AVGVOL_MIN,
                 max_pages=10, pause=0.6) -> list[str]:
-    """
-    Robuster Finviz-Scanner (Regex auf screener-link-primary).
-    Nur Fallback, wenn tickers.txt leer ist.
-    """
     f_price = f"sh_price_u{int(price_max)}"
-    f_relvo = f"sh_relvol_o{int(relvol_min)}"         # Finviz: Ganzzahl-Schwellen
-    f_avgvo = f"sh_avgvol_o{int(avgvol_min // 1000)}" # 500k -> 500
-
+    f_relvo = f"sh_relvol_o{int(relvol_min)}"
+    f_avgvo = f"sh_avgvol_o{int(avgvol_min // 1000)}"
     base = "https://finviz.com/screener.ashx"
     seen, tickers = set(), []
-
     for page in range(max_pages):
         r_start = page * 20 + 1
         params = {"v": 111, "f": ",".join([f_price, f_relvo, f_avgvo]), "r": r_start}
@@ -85,35 +86,23 @@ def scan_finviz(price_max=PRICE_MAX, relvol_min=RELVOL_MIN, avgvol_min=AVGVOL_MI
             resp = requests.get(base, params=params, headers=HEADERS, timeout=15)
             html = resp.text
             log(f"[SCAN] page={page+1} url={resp.url} len={len(html)}")
-
-            # Nur Primär-Links der Ergebnistabelle:
-            # <a class="screener-link-primary" ...>TICKER</a>
             page_tickers = re.findall(
                 r'class="screener-link-primary"[^>]*>\s*([A-Z0-9.\-]{1,8})\s*</a>',
                 html, flags=re.I
             )
-            # filtern: echte Tickers (keine Prozent/Leerwörter)
             page_tickers = [t.upper() for t in page_tickers if 1 <= len(t) <= 8 and t.replace('.', '').replace('-', '').isalnum()]
             page_tickers = [t for t in page_tickers if not any(ch in t for ch in "%()")]
-
             added = 0
             for t in page_tickers:
                 if t not in seen:
-                    seen.add(t)
-                    tickers.append(t)
-                    added += 1
+                    seen.add(t); tickers.append(t); added += 1
             log(f"[SCAN] page {page+1}: +{added} tickers, total={len(tickers)}")
-
-            # Ende, wenn weniger als 20 Einträge auf Seite
             if len(page_tickers) < 20:
                 break
-
         except Exception as e:
             log(f"[SCAN] Finviz-Fehler (Seite {page+1}): {e}")
             break
-
         time.sleep(pause)
-
     log(f"[SCAN] Finviz-Kandidaten: {len(tickers)} -> {tickers[:20]} …")
     return tickers
 
@@ -127,6 +116,116 @@ def rsi(series: pd.Series, period: int = 14) -> float:
     rsi_series = 100 - (100 / (1 + rs))
     return to_float_scalar(rsi_series.iloc[-1])
 
+# ===================== KI-Analyse (SL/TP/Trailing/Qty) =====================
+def analyze_with_ki(signal: dict) -> dict:
+    """
+    Ruft den KI-Worker (KI_WEBHOOK_URL) auf.
+    Erwartete Schemata:
+      A) { stopLossPct, takeProfitPct, trailingStopPct, qty, sl_price?, tp_price? }
+      B) { sl_percent, tp_percent, trailing_percent, qty_sized, sl_price?, tp_price? }
+    Gibt einheitlich gemappte Felder zurück.
+    """
+    if not KI_WEBHOOK_URL:
+        return {}
+
+    payload = {
+        "symbol": signal["symbol"],
+        "price": signal["price"],
+        "recommendation": signal["recommendation"],
+        "rsi": signal["rsi"],
+        "pct_move": signal["pct_move"],
+        "breakout": signal["breakout"],
+        "momentum": signal["momentum"],
+        "equity": ACCOUNT_EQUITY,
+        "risk_pct": RISK_PCT,
+        "spark": signal.get("spark", []),
+    }
+
+    for attempt in range(2):
+        try:
+            r = requests.post(KI_WEBHOOK_URL, json=payload, timeout=20)
+            if not r.ok:
+                log(f"[KI] HTTP {r.status_code}: {r.text[:300]}")
+                return {}
+            data = r.json()
+            res = data.get("result") if isinstance(data, dict) and "result" in data else data
+            if not isinstance(res, dict):
+                log("[KI] invalid response shape")
+                return {}
+
+            out = {}
+            # Schema A
+            if "stopLossPct" in res or "takeProfitPct" in res or "trailingStopPct" in res:
+                if res.get("stopLossPct") is not None:     out["sl_percent"] = float(res["stopLossPct"])
+                if res.get("takeProfitPct") is not None:   out["tp_percent"] = float(res["takeProfitPct"])
+                if res.get("trailingStopPct") is not None: out["trailing_percent"] = float(res["trailingStopPct"])
+                if res.get("qty") is not None:             out["qty_sized"] = int(res["qty"])
+
+            # Schema B (+ Extras)
+            for k in ("sl_percent","tp_percent","trailing_percent","sl_price","tp_price","qty_sized",
+                      "equity_used","risk_pct_used","ki_score","ki_min","ki_pass","rationale","analyzed_at"):
+                if k in res and res[k] is not None:
+                    out[k] = res[k]
+
+            # Guardrails & Ableitung der Preise
+            price = float(signal["price"])
+            slp = out.get("sl_percent"); tpp = out.get("tp_percent"); trp = out.get("trailing_percent")
+
+            if isinstance(slp, (int,float)) and slp < 0: out["sl_percent"] = None
+            if isinstance(tpp, (int,float)) and tpp < 0: out["tp_percent"] = None
+            if isinstance(trp, (int,float)) and trp < 0: out["trailing_percent"] = None
+
+            if "sl_price" not in out and isinstance(out.get("sl_percent"), (int,float)):
+                out["sl_price"] = round(price * (1 - out["sl_percent"]/100), 4)
+            if "tp_price" not in out and isinstance(out.get("tp_percent"), (int,float)):
+                out["tp_price"] = round(price * (1 + out["tp_percent"]/100), 4)
+
+            # Mindest-RR
+            if isinstance(slp, (int,float)) and isinstance(tpp, (int,float)) and tpp <= slp * 1.2:
+                out["tp_percent"] = round(slp * 1.6, 2)
+                out["tp_price"]   = round(price * (1 + out["tp_percent"]/100), 4)
+
+            return out
+
+        except requests.RequestException as e:
+            log(f"[KI] attempt {attempt+1} error: {e}")
+            time.sleep(0.6)
+
+    return {}
+
+# ===================== TradersPost Versand =====================
+def tp_send_buy(sig: dict):
+    """
+    Sendet eine BUY-Order an TradersPost-Webhook (TP_WEBHOOK_URL).
+    Unterstützt Prozent- (preferred) und Preis-Felder.
+    """
+    if not TP_WEBHOOK_URL:
+        return
+
+    qty = int(sig.get("qty_sized") or sig.get("qty") or DEFAULT_QTY)
+
+    payload = {
+        "ticker": sig["symbol"],
+        "action": "buy",
+        "quantity": qty,
+        "order_type": "market",
+        "time_in_force": "day",
+        # Prozent
+        "take_profit_percent": sig.get("tp_percent"),
+        "stop_loss_percent": sig.get("sl_percent"),
+        "trailing_stop_percent": sig.get("trailing_percent"),
+        # Falls Preise gegeben (werden von TP ignoriert, wenn Percent aktiv ist)
+        "take_profit_price": sig.get("tp_price"),
+        "stop_loss_price": sig.get("sl_price"),
+        "meta": {"source": "gh-actions-bot"}
+    }
+
+    try:
+        r = requests.post(TP_WEBHOOK_URL, json=payload, timeout=15)
+        log(f"[TP BUY] {sig['symbol']} qty={qty} -> {r.status_code} {r.text[:240]}")
+    except Exception as e:
+        log(f"[TP BUY] send failed: {e}")
+
 # ===================== Evaluierung pro Ticker =====================
 def evaluate_ticker(df: pd.DataFrame, symbol: str) -> dict | None:
     if df is None or df.empty:
@@ -138,14 +237,12 @@ def evaluate_ticker(df: pd.DataFrame, symbol: str) -> dict | None:
     price = series_last_float(close, -1)
     prev_close = series_last_float(close, -2)
 
-    # Schutz, falls NaN
     if not (price == price) or not (prev_close == prev_close) or prev_close == 0.0:
         log(f"[{symbol}] skip: bad price/prev_close (price={price}, prev_close={prev_close})")
         return None
 
     pct_move = ((price - prev_close) / prev_close) * 100.0
 
-    # Vorheriges Hoch (ohne letzte Kerze) + Toleranz
     tail = high.tail(BREAKOUT_LEN + 1)
     if len(tail) >= 2:
         prev_high = to_float_scalar(tail.iloc[:-1].max())
@@ -158,7 +255,6 @@ def evaluate_ticker(df: pd.DataFrame, symbol: str) -> dict | None:
     rsi_now = rsi(close, 14)
     momentum = bool(pct_move >= DELTA_MIN)
 
-    # BUY-Bedingung (aggressiv, aber begrenzt über RSI)
     buy_raw = bool(breakout and momentum and (rsi_now <= RSI_BUY_MAX))
     recommendation = "BUY" if buy_raw else "HOLD"
 
@@ -208,8 +304,26 @@ def run():
                 continue
 
             sig = evaluate_ticker(df, t)
-            if sig:
-                final_signals.append(sig)
+            if not sig:
+                continue
+
+            # Sparkline für Dashboard & KI
+            sig["spark"] = last_n_closes(df, 50)
+
+            # KI + TP bei BUY
+            if sig["recommendation"] == "BUY":
+                enriched = analyze_with_ki(sig)
+                if enriched:
+                    sig.update(enriched)
+                if not sig.get("qty_sized"):
+                    # simple Fallback-Position sizing
+                    price = float(sig["price"])
+                    risk_abs = ACCOUNT_EQUITY * (RISK_PCT / 100.0)
+                    qty = int(max(1, risk_abs / max(price * 0.1, 0.01)))  # sehr grob, KI überschreibt
+                    sig["qty_sized"] = qty
+                tp_send_buy(sig)
+
+            final_signals.append(sig)
 
         except Exception as e:
             log(f"[ERR] {t}: {e}")
