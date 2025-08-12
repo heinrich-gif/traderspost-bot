@@ -71,6 +71,7 @@ def download_hist(t, period="30d", interval="5m"):
     return df
 
 def to_series_close(df):
+    """Gibt garantiert eine 1D-Series (float) für 'Close' zurück."""
     if df is None or df.empty:
         return pd.Series(dtype="float64")
 
@@ -94,7 +95,23 @@ def to_series_close(df):
 
     return s
 
+def ensure_series(x):
+    """Macht aus 1-spaltigem DataFrame eine Series."""
+    if isinstance(x, pd.DataFrame):
+        return x.iloc[:, 0]
+    return x
+
+def last_scalar(x):
+    """Gibt den letzten Wert einer Series/DataFrame als float zurück (robust)."""
+    s = ensure_series(x)
+    val = s.iloc[-1]
+    try:
+        return float(val)
+    except Exception:
+        return float(pd.to_numeric(pd.Series([val]), errors="coerce").iloc[0])
+
 def compute_inds(df):
+    """Berechnet RSI/EMA auf Basis einer garantierten 1D-Close-Serie."""
     df = df.copy()
     close = to_series_close(df)
     if close.empty:
@@ -106,13 +123,19 @@ def compute_inds(df):
     return df.dropna()
 
 def crossover_up(series, level):
+    series = ensure_series(series)
     return len(series) >= 2 and series.iloc[-2] <= level and series.iloc[-1] > level
 
 def crossover_down(series, level):
+    series = ensure_series(series)
     return len(series) >= 2 and series.iloc[-2] >= level and series.iloc[-1] < level
 
 def trend_ok(df):
-    return (df["ema_fast"].iloc[-1] > df["ema_slow"].iloc[-1]) and (df["Close"].iloc[-1] > df["ema_slow"].iloc[-1])
+    """Liefert garantiert bool: Trendfilter Close>EMA200 und EMA50>EMA200."""
+    ema_f = last_scalar(df["ema_fast"])
+    ema_s = last_scalar(df["ema_slow"])
+    close = last_scalar(df["Close"])
+    return (ema_f > ema_s) and (close > ema_s)
 
 def cooldown_ok(state, symbol, action, now_utc):
     key = f"{symbol}:{action}"
@@ -137,6 +160,7 @@ def send_to_cloudflare(symbol, action, qty, price=None):
     return ok
 
 def send_traderspost_direct(symbol, action, qty):
+    """Nur als Failover gedacht – normal leitet der KI-Worker weiter."""
     if not TP_WEBHOOK:
         print("[TP] TP_WEBHOOK_URL fehlt (Failover nicht möglich).")
         return False
@@ -197,15 +221,21 @@ def run():
                 time.sleep(0.15)
                 continue
 
-            price = float(df["Close"].iloc[-1])
-            rsi_val = float(df["rsi"].iloc[-1])
-            ema_fast_val = float(df["ema_fast"].iloc[-1])
-            ema_slow_val = float(df["ema_slow"].iloc[-1])
+            # sichere Series & Skalare
+            close_s   = ensure_series(df["Close"])
+            rsi_s     = ensure_series(df["rsi"])
+            ema_f_s   = ensure_series(df["ema_fast"])
+            ema_s_s   = ensure_series(df["ema_slow"])
 
-            buy = trend_ok(df) and crossover_up(df["rsi"], RSI_BUY_CROSS)
-            sell = crossover_down(df["rsi"], RSI_SELL_CROSS)
+            price       = last_scalar(close_s)
+            rsi_val     = last_scalar(rsi_s)
+            ema_fast_v  = last_scalar(ema_f_s)
+            ema_slow_v  = last_scalar(ema_s_s)
 
-            print(f"[{t}] price={price:.2f} rsi={rsi_val:.2f} emaF/S={ema_fast_val:.2f}/{ema_slow_val:.2f} buy={buy} sell={sell}")
+            buy  = trend_ok(df) and crossover_up(rsi_s, RSI_BUY_CROSS)
+            sell = crossover_down(rsi_s, RSI_SELL_CROSS)
+
+            print(f"[{t}] price={price:.2f} rsi={rsi_val:.2f} emaF/S={ema_fast_v:.2f}/{ema_slow_v:.2f} buy={buy} sell={sell}")
 
             # BUY
             if buy and cooldown_ok(state, t, "buy", now_utc):
@@ -219,7 +249,7 @@ def run():
                         mark_sent(state, t, "buy", now_utc)
                         print(f"[OK] BUY {t} @ {price:.2f}")
 
-            # SELL (optional)
+            # SELL (optional; für nur-Long-Strategie auskommentieren)
             if sell and cooldown_ok(state, t, "sell", now_utc):
                 if ki_pass(t, "sell", price):
                     ok = True
