@@ -9,30 +9,34 @@ import yfinance as yf
 import requests
 
 # ========= Konfiguration (ENV) =========
-TIMEFRAME        = os.getenv("TIMEFRAME", "5m")
-POSITION_QTY     = int(os.getenv("POSITION_QTY", "10"))          # Fallback, falls KI keine qty liefert
+TIMEFRAME          = os.getenv("TIMEFRAME", "5m")
+POSITION_QTY       = int(os.getenv("POSITION_QTY", "10"))          # Fallback, falls KI keine qty liefert
 
 # Setup-Regeln
-BREAKOUT_LEN     = int(os.getenv("BREAKOUT_LEN", "20"))
-MIN_PCT_MOVE     = float(os.getenv("MIN_PCT_MOVE", "5.0"))
-MIN_RSI_MOM      = float(os.getenv("MIN_RSI_MOM", "50.0"))
-NEAR_BREAKOUT_PCT= float(os.getenv("NEAR_BREAKOUT_PCT", "0.3"))  # Toleranz in %, z.B. 0.3
+BREAKOUT_LEN       = int(os.getenv("BREAKOUT_LEN", "20"))
+MIN_PCT_MOVE       = float(os.getenv("MIN_PCT_MOVE", "5.0"))       # wird weiter unten NICHT mehr für BUY genutzt
+MIN_RSI_MOM        = float(os.getenv("MIN_RSI_MOM", "50.0"))       # nur noch Info
+NEAR_BREAKOUT_PCT  = float(os.getenv("NEAR_BREAKOUT_PCT", "0.3"))  # Toleranz in %, z.B. 0.3
+
+# Neue aggressivere BUY-Schwellen
+BUY_RSI_MAX        = float(os.getenv("BUY_RSI_MAX", "65"))         # BUY zulassen bis zu diesem RSI
+BUY_DELTA_MIN      = float(os.getenv("BUY_DELTA_MIN", "0.5"))      # Mindest-Δ% für BUY (z.B. 0.5%)
 
 # KI-Scoring (Badge/Filter)
-KI_SCORER_URL    = os.getenv("KI_SCORER_URL", "").strip()
-KI_SCORE_MIN     = int(os.getenv("KI_SCORE_MIN", "65"))
+KI_SCORER_URL      = os.getenv("KI_SCORER_URL", "").strip()
+KI_SCORE_MIN       = int(os.getenv("KI_SCORE_MIN", "65"))
 
 # KI-Analyse (SL/TP/Trailing/Qty)
-KI_WEBHOOK_URL   = os.getenv("KI_WEBHOOK_URL", "").strip()
-ACCOUNT_EQUITY   = float(os.getenv("ACCOUNT_EQUITY", "10000"))
-RISK_PCT         = float(os.getenv("RISK_PCT", "1"))
+KI_WEBHOOK_URL     = os.getenv("KI_WEBHOOK_URL", "").strip()
+ACCOUNT_EQUITY     = float(os.getenv("ACCOUNT_EQUITY", "10000"))
+RISK_PCT           = float(os.getenv("RISK_PCT", "1"))
 
 # TradersPost (optional)
-TP_WEBHOOK_URL   = os.getenv("TP_WEBHOOK_URL", "").strip()
+TP_WEBHOOK_URL     = os.getenv("TP_WEBHOOK_URL", "").strip()
 
 # Dateien
-OUTPUT_PATH      = Path(os.getenv("OUTPUT_PATH", "docs/signals.json"))
-TICKERS_FILE     = Path("tickers.txt")
+OUTPUT_PATH        = Path(os.getenv("OUTPUT_PATH", "docs/signals.json"))
+TICKERS_FILE       = Path("tickers.txt")
 
 
 # ========= Zeit / Session =========
@@ -95,7 +99,7 @@ def download_df(ticker: str, period="60d", interval="5m") -> pd.DataFrame:
         interval=interval,
         progress=False,
         auto_adjust=True,
-        prepost=True,              # <<< PATCH 1: Extended Hours laden
+        prepost=True,              # Extended Hours laden
         group_by="column",
         threads=False,
     )
@@ -165,13 +169,12 @@ def analyze_with_ki(signal: dict) -> dict:
 
 # ========= Strategie =========
 def evaluate_ticker(df: pd.DataFrame, ticker: str) -> dict:
-    # ---- Stale Check (PATCH 3) ----
+    # ---- Stale Check ----
     try:
         last_ts = df.index[-1]
         if hasattr(last_ts, "to_pydatetime"):
             last_ts = last_ts.to_pydatetime()
         if last_ts.tzinfo is None:
-            # yfinance liefert manchmal naive UTC-Zeiten
             last_ts = last_ts.replace(tzinfo=timezone.utc)
         age_min = (datetime.now(timezone.utc) - last_ts).total_seconds() / 60.0
         if age_min > 8:
@@ -188,7 +191,7 @@ def evaluate_ticker(df: pd.DataFrame, ticker: str) -> dict:
     prev_close = float(c.iloc[-2])
     pct_move = (price - prev_close) / prev_close * 100.0 if prev_close else 0.0
 
-    # ---- PrevHigh OHNE aktuelle Kerze + Toleranz (PATCH 2) ----
+    # PrevHigh OHNE aktuelle Kerze + Near-Breakout-Toleranz
     window = max(1, BREAKOUT_LEN)
     if len(h) > window:
         prev_high_raw = float(h.iloc[-(window+1):-1].max())
@@ -196,14 +199,17 @@ def evaluate_ticker(df: pd.DataFrame, ticker: str) -> dict:
         prev_high_raw = float(h.iloc[:-1].max()) if len(h) > 1 else float(h.max())
     tolerance = prev_high_raw * (NEAR_BREAKOUT_PCT / 100.0)
     prev_high = prev_high_raw
-    breakout = (price >= prev_high_raw - tolerance)
+    near_breakout = (price >= prev_high_raw - tolerance)
 
     rsi_now = float(rsi(c).iloc[-1])
-    momentum = rsi_now >= MIN_RSI_MOM
-    buy_raw  = breakout and momentum and (pct_move >= MIN_PCT_MOVE)
+    momentum = rsi_now >= MIN_RSI_MOM  # nur Info/Badge
 
-    # KI-Score (für Badge immer berechnen; BUY nur filtern, wenn buy_raw True)
-    ki_score, _ = score_with_ki(ticker, price, rsi_now, pct_move, breakout, momentum)
+    # >>> AGGRESSIVE BUY-LOGIK <<<
+    # BUY, wenn (RSI <= BUY_RSI_MAX und Δ% >= BUY_DELTA_MIN) ODER Near-Breakout
+    buy_raw = ((rsi_now <= BUY_RSI_MAX and pct_move >= BUY_DELTA_MIN) or near_breakout)
+
+    # KI-Score (Badge immer; BUY nur filtern, wenn buy_raw True)
+    ki_score, _ = score_with_ki(ticker, price, rsi_now, pct_move, near_breakout, momentum)
     ki_pass = True
     if buy_raw and (ki_score is not None):
         ki_pass = ki_score >= KI_SCORE_MIN
@@ -218,7 +224,7 @@ def evaluate_ticker(df: pd.DataFrame, ticker: str) -> dict:
         "prev_high_n": window,
         "prev_high_value": round(prev_high, 4),
         "near_breakout_pct": NEAR_BREAKOUT_PCT,
-        "breakout": bool(breakout),
+        "breakout": bool(near_breakout),
         "momentum": bool(momentum),
         "recommendation": recommendation,
         "qty": POSITION_QTY if recommendation == "BUY" else 0,
@@ -236,8 +242,9 @@ def evaluate_ticker(df: pd.DataFrame, ticker: str) -> dict:
     }
 
     print(
-        f"[{ticker}] price={price:.2f} rsi={rsi_now:.2f} Δ%={pct_move:.2f} "
-        f"prevHigh{window}={prev_high:.4f} tol={NEAR_BREAKOUT_PCT:.3f}% breakout={breakout} mom={momentum} "
+        f"[{ticker}] price={price:.4f} rsi={rsi_now:.2f} Δ%={pct_move:.2f} "
+        f"prevHigh{window}={prev_high:.4f} tol={NEAR_BREAKOUT_PCT:.3f}% "
+        f"nearBO={near_breakout} (RSI<= {BUY_RSI_MAX} & Δ%>= {BUY_DELTA_MIN}) -> raw={buy_raw} "
         f"ki={ki_score} pass={ki_pass} -> {recommendation}"
     )
     return rec
@@ -279,6 +286,11 @@ def write_signals(signals: list, path: Path = OUTPUT_PATH):
         "breakout_len": BREAKOUT_LEN,
         "min_pct_move": MIN_PCT_MOVE,
         "min_rsi_mom": MIN_RSI_MOM,
+        "buy_logic": {
+            "buy_rsi_max": BUY_RSI_MAX,
+            "buy_delta_min": BUY_DELTA_MIN,
+            "near_breakout_pct": NEAR_BREAKOUT_PCT
+        },
         "ki": {"scorer_url_set": bool(KI_SCORER_URL), "min_score": KI_SCORE_MIN},
         "signals": signals,
     }
