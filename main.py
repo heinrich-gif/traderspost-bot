@@ -9,25 +9,29 @@ import yfinance as yf
 import requests
 
 # ========= Konfiguration (ENV) =========
-TIMEFRAME      = os.getenv("TIMEFRAME", "5m")
-POSITION_QTY   = int(os.getenv("POSITION_QTY", "10"))
+TIMEFRAME        = os.getenv("TIMEFRAME", "5m")
+POSITION_QTY     = int(os.getenv("POSITION_QTY", "10"))          # Fallback, falls KI keine qty liefert
 
 # Setup-Regeln
-BREAKOUT_LEN   = int(os.getenv("BREAKOUT_LEN", "20"))
-MIN_PCT_MOVE   = float(os.getenv("MIN_PCT_MOVE", "5.0"))
-MIN_RSI_MOM    = float(os.getenv("MIN_RSI_MOM", "50.0"))
+BREAKOUT_LEN     = int(os.getenv("BREAKOUT_LEN", "20"))
+MIN_PCT_MOVE     = float(os.getenv("MIN_PCT_MOVE", "5.0"))
+MIN_RSI_MOM      = float(os.getenv("MIN_RSI_MOM", "50.0"))
 
-# KI-Scoring
-KI_SCORER_URL  = os.getenv("KI_SCORER_URL", "").strip()     # z. B. Cloudflare-Worker-URL
-KI_SCORE_MIN   = int(os.getenv("KI_SCORE_MIN", "65"))       # 65–70 empfohlen
+# KI-Scoring (Badge/Filter)
+KI_SCORER_URL    = os.getenv("KI_SCORER_URL", "").strip()        # z. B. Cloudflare Scorer
+KI_SCORE_MIN     = int(os.getenv("KI_SCORE_MIN", "65"))          # BUY nur wenn Score >= MIN (sofern buy_raw True)
 
-# Webhooks (optional)
-KI_WEBHOOK_URL = os.getenv("KI_WEBHOOK_URL", "").strip()    # z. B. Filter/Relay
-TP_WEBHOOK_URL = os.getenv("TP_WEBHOOK_URL", "").strip()    # TradersPost Webhook
+# KI-Analyse (SL/TP/Trailing/Qty)
+KI_WEBHOOK_URL   = os.getenv("KI_WEBHOOK_URL", "").strip()       # ← dein neuer KI-Analyse-Worker
+ACCOUNT_EQUITY   = float(os.getenv("ACCOUNT_EQUITY", "10000"))   # für Positions-sizing im Worker
+RISK_PCT         = float(os.getenv("RISK_PCT", "1"))             # Risiko pro Trade in %
+
+# TradersPost (optional)
+TP_WEBHOOK_URL   = os.getenv("TP_WEBHOOK_URL", "").strip()
 
 # Dateien
-OUTPUT_PATH    = Path(os.getenv("OUTPUT_PATH", "docs/signals.json"))
-TICKERS_FILE   = Path("tickers.txt")
+OUTPUT_PATH      = Path(os.getenv("OUTPUT_PATH", "docs/signals.json"))
+TICKERS_FILE     = Path("tickers.txt")
 
 
 # ========= Zeit / Session =========
@@ -95,7 +99,84 @@ def download_df(ticker: str, period="60d", interval="5m") -> pd.DataFrame:
     return df
 
 
-# ========= Strategie + KI =========
+# ========= KI-Scoring (Badge / BUY-Filter) =========
+def score_with_ki(symbol: str, price: float, rsi_now: float, pct_move: float, breakout: bool, momentum: bool):
+    """
+    Fragt optional den KI_SCORER_URL ab und gibt (score:int|None, pass:bool) zurück.
+    pass=True, wenn (kein Score nötig) oder Score >= KI_SCORE_MIN, sonst False.
+    """
+    ki_score, ki_pass = None, True
+    if not KI_SCORER_URL:
+        return ki_score, ki_pass
+    try:
+        resp = requests.post(
+            KI_SCORER_URL,
+            json={
+                "symbol": symbol,
+                "price": round(price, 4),
+                "rsi": round(rsi_now, 2),
+                "pctChange": round(pct_move, 2),
+                "breakout": bool(breakout),
+                "momentum": bool(momentum),
+            },
+            timeout=12
+        )
+        if resp.ok:
+            j = resp.json()
+            if isinstance(j, dict) and "score" in j:
+                ki_score = int(j["score"])
+    except Exception as e:
+        print(f"[KI] scorer error {symbol}: {e}")
+
+    # Score beeinflusst nur BUY, wenn das Roh-Setup grundsätzlich passt (entschieden im Aufrufer)
+    return ki_score, ki_pass  # ki_pass wird im Aufrufer gesetzt, wenn buy_raw True und score vorhanden
+
+
+# ========= KI-Analyse (SL/TP/Trailing/Qty) =========
+def analyze_with_ki(signal: dict) -> dict:
+    """
+    Ruft den KI_WEBHOOK_URL Worker auf.
+    Erwartet Response-Format:
+      { analyzed_at: "...", result: { ...enriched signal... } }
+    oder bei Array: { result: [ ... ] }
+    Gibt das angereicherte Einzel-Resultat zurück; bei Fehler -> {}.
+    """
+    if not KI_WEBHOOK_URL:
+        return {}
+
+    payload = {
+        "symbol": signal["symbol"],
+        "price": signal["price"],
+        "recommendation": signal["recommendation"],
+        "rsi": signal["rsi"],
+        "pct_move": signal["pct_move"],
+        "breakout": signal["breakout"],
+        "momentum": signal["momentum"],
+        "equity": ACCOUNT_EQUITY,
+        "risk_pct": RISK_PCT,
+    }
+
+    try:
+        r = requests.post(KI_WEBHOOK_URL, json=payload, timeout=15)
+        if not r.ok:
+            print(f"[KI-ANALYSE] HTTP {r.status_code}: {r.text[:160]}")
+            return {}
+        data = r.json()
+        res = data.get("result")
+        if isinstance(res, list) and res:
+            return res[0]
+        if isinstance(res, dict):
+            return res
+        # Falls Worker direkt das angereicherte Dict zurückgibt
+        if isinstance(data, dict) and "sl_price" in data:
+            return data
+        return {}
+    except Exception as e:
+        print(f"[KI-ANALYSE] error: {e}")
+        return {}
+
+
+# ========= Strategie =========
 def evaluate_ticker(df: pd.DataFrame, ticker: str) -> dict:
     c = close_series(df)
     h = high_series(df)
@@ -112,32 +193,11 @@ def evaluate_ticker(df: pd.DataFrame, ticker: str) -> dict:
     momentum = rsi_now >= MIN_RSI_MOM
     buy_raw  = breakout and momentum and (pct_move >= MIN_PCT_MOVE)
 
-    # ---- KI-Score: IMMER berechnen (für Anzeige), aber nur BUY filtern wenn buy_raw True ----
-    ki_score = None
-    ki_pass  = True
-    if KI_SCORER_URL:
-        try:
-            resp = requests.post(
-                KI_SCORER_URL,
-                json={
-                    "symbol": ticker,
-                    "price": round(price, 4),
-                    "rsi": round(rsi_now, 2),
-                    "pctChange": round(pct_move, 2),
-                    "breakout": bool(breakout),
-                    "momentum": bool(momentum),
-                },
-                timeout=12
-            )
-            if resp.ok:
-                j = resp.json()
-                if isinstance(j, dict) and "score" in j:
-                    ki_score = int(j["score"])
-                    # Für die Entscheidung nur relevant, wenn buy_raw bereits True ist
-                    if buy_raw:
-                        ki_pass = ki_score >= KI_SCORE_MIN
-        except Exception as e:
-            print(f"[KI] scorer error {ticker}: {e}")
+    # KI-Score immer berechnen (für Anzeige), aber BUY nur filtern, wenn buy_raw True
+    ki_score, _ = score_with_ki(ticker, price, rsi_now, pct_move, breakout, momentum)
+    ki_pass = True
+    if buy_raw and (ki_score is not None):
+        ki_pass = ki_score >= KI_SCORE_MIN
 
     recommendation = "BUY" if (buy_raw and ki_pass) else "HOLD"
 
@@ -155,7 +215,15 @@ def evaluate_ticker(df: pd.DataFrame, ticker: str) -> dict:
         "ki_pass": ki_pass,
         "timestamp": now_utc_iso(),
         "spark": last_n_closes(df, 50),
+        # Platzhalter für KI-Analyse (werden bei BUY gefüllt)
+        "sl_percent": None,
+        "tp_percent": None,
+        "trailing_percent": None,
+        "sl_price": None,
+        "tp_price": None,
+        "qty_sized": None,
     }
+
     print(
         f"[{ticker}] price={price:.2f} rsi={rsi_now:.2f} Δ%={pct_move:.2f} "
         f"prevHigh{BREAKOUT_LEN}={prev_high:.4f} breakout={breakout} mom={momentum} "
@@ -164,28 +232,33 @@ def evaluate_ticker(df: pd.DataFrame, ticker: str) -> dict:
     return rec
 
 
-# ========= Webhook-Versand (optional) =========
-def send_signal_to_endpoints(sig: dict):
-    if sig["recommendation"] != "BUY":
+# ========= TradersPost Versand =========
+def send_to_traderspost(sig: dict):
+    if not TP_WEBHOOK_URL:
         return
+    # Nutze angereicherte Werte, wenn vorhanden
+    qty = int(sig.get("qty_sized") or sig.get("qty") or POSITION_QTY)
     payload = {
         "symbol": sig["symbol"],
         "action": "buy",
-        "quantity": sig["qty"],
-        "price": sig["price"]
+        "quantity": qty,
+        "price": sig["price"],
+        # Zusatz-Infos – falls der TP-Webhook sie versteht, werden sie genutzt; sonst ignoriert.
+        "tp_percent": sig.get("tp_percent"),
+        "sl_percent": sig.get("sl_percent"),
+        "trailing_percent": sig.get("trailing_percent"),
+        "tp_price": sig.get("tp_price"),
+        "sl_price": sig.get("sl_price"),
+        "meta": {
+            "ki_score": sig.get("ki_score"),
+            "ki_pass": sig.get("ki_pass"),
+        }
     }
-    if KI_WEBHOOK_URL:
-        try:
-            r = requests.post(KI_WEBHOOK_URL, json=payload, timeout=10)
-            print(f"[CF] {sig['symbol']} -> {r.status_code} {r.text[:120]}")
-        except Exception as e:
-            print(f"[CF] send failed: {e}")
-    if TP_WEBHOOK_URL:
-        try:
-            r = requests.post(TP_WEBHOOK_URL, json=payload, timeout=10)
-            print(f"[TP] {sig['symbol']} -> {r.status_code} {r.text[:120]}")
-        except Exception as e:
-            print(f"[TP] send failed: {e}")
+    try:
+        r = requests.post(TP_WEBHOOK_URL, json=payload, timeout=12)
+        print(f"[TP] {sig['symbol']} -> {r.status_code} {r.text[:160]}")
+    except Exception as e:
+        print(f"[TP] send failed: {e}")
 
 
 # ========= JSON-Ausgabe fürs Dashboard =========
@@ -228,12 +301,29 @@ def run():
             if df is None or df.empty:
                 print(f"[WARN] {t} empty df")
                 continue
+
             sig = evaluate_ticker(df, t)
-            signals.append(sig)
+
+            # BUY → KI-Analyse (SL/TP/Trailing/Qty) + optional TP-Order
             if sig["recommendation"] == "BUY":
-                send_signal_to_endpoints(sig)
+                enriched = analyze_with_ki(sig)
+                if enriched:
+                    # Mache die relevanten Felder in sig sichtbar
+                    for k in ("sl_percent","tp_percent","trailing_percent","sl_price","tp_price","qty_sized","equity_used","risk_pct_used","ki_score","ki_min","ki_pass","rationale"):
+                        if k in enriched:
+                            sig[k] = enriched[k]
+                # Falls keine qty_sized geliefert → Fallback qty
+                if not sig.get("qty_sized"):
+                    sig["qty_sized"] = sig.get("qty", POSITION_QTY)
+
+                # Optional: Order an TradersPost schicken
+                send_to_traderspost(sig)
+
+            signals.append(sig)
+
         except Exception as e:
             print(f"[ERR] {t} failed: {e}")
+
         time.sleep(0.15)  # freundlich zu yfinance
 
     write_signals(signals)
