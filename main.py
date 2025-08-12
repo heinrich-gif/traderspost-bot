@@ -8,38 +8,38 @@ import pandas as pd
 import yfinance as yf
 import requests
 
-# ========= Konfiguration aus Umgebungsvariablen =========
+# ========= Konfiguration (ENV) =========
 TIMEFRAME      = os.getenv("TIMEFRAME", "5m")
 POSITION_QTY   = int(os.getenv("POSITION_QTY", "10"))
 
-# Setup-Regeln (Breakout + Momentum)
+# Setup-Regeln
 BREAKOUT_LEN   = int(os.getenv("BREAKOUT_LEN", "20"))
 MIN_PCT_MOVE   = float(os.getenv("MIN_PCT_MOVE", "5.0"))
 MIN_RSI_MOM    = float(os.getenv("MIN_RSI_MOM", "50.0"))
 
-# KI-Scoring (optional)
-KI_SCORER_URL  = os.getenv("KI_SCORER_URL", "").strip()    # z. B. dein Cloudflare-Worker
-KI_SCORE_MIN   = int(os.getenv("KI_SCORE_MIN", "65"))      # 65–70 empfohlen
+# KI-Scoring
+KI_SCORER_URL  = os.getenv("KI_SCORER_URL", "").strip()     # z. B. Cloudflare-Worker-URL
+KI_SCORE_MIN   = int(os.getenv("KI_SCORE_MIN", "65"))       # 65–70 empfohlen
 
 # Webhooks (optional)
-KI_WEBHOOK_URL = os.getenv("KI_WEBHOOK_URL", "").strip()   # z. B. dein Filter/Relay
-TP_WEBHOOK_URL = os.getenv("TP_WEBHOOK_URL", "").strip()   # TradersPost Webhook
+KI_WEBHOOK_URL = os.getenv("KI_WEBHOOK_URL", "").strip()    # z. B. Filter/Relay
+TP_WEBHOOK_URL = os.getenv("TP_WEBHOOK_URL", "").strip()    # TradersPost Webhook
 
-# Ausgaben
+# Dateien
 OUTPUT_PATH    = Path(os.getenv("OUTPUT_PATH", "docs/signals.json"))
 TICKERS_FILE   = Path("tickers.txt")
 
 
-# ========= Time / Session =========
+# ========= Zeit / Session =========
 def now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 def is_us_extended_utc(dt: datetime) -> bool:
     """
     US Extended Hours (Mo–Fr):
-      - Pre-Market: 08:00–13:30 UTC
-      - Regular:    13:30–20:00 UTC
-      - After:      20:00–24:00 UTC + 00:00–02:00 UTC
+      Pre   08:00–13:30 UTC
+      RTH   13:30–20:00 UTC
+      After 20:00–24:00 UTC + 00:00–02:00 UTC
     => Effektiv: 08:00–23:59 + 00:00–01:59 UTC
     """
     wd = dt.weekday()  # 0=Mo … 6=So
@@ -49,7 +49,7 @@ def is_us_extended_utc(dt: datetime) -> bool:
     return (8 * 60 <= mins < 24 * 60) or (0 <= mins < 2 * 60)
 
 
-# ========= Pandas/YF Hilfen (robust gegen 2D/MultiIndex) =========
+# ========= Pandas/YF Hilfen =========
 def to_1d_series(obj) -> pd.Series:
     """ Erzwingt 1D Serie aus Series oder 1-spaltigem DataFrame. """
     s = obj
@@ -78,10 +78,9 @@ def rsi(series: pd.Series, length: int = 14) -> pd.Series:
 
 def download_df(ticker: str, period="60d", interval="5m") -> pd.DataFrame:
     """
-    Holt Kursdaten stabil (kein MultiIndex), auto_adjust=True gegen Split/Div-Gaps.
-    Für sehr kurze Intervalle ggf. period anpassen (z. B. 1m -> 7d).
+    Stabiler Download ohne MultiIndex; auto_adjust=True gegen Splits/Dividenden.
+    Passt period automatisch für 1m an.
     """
-    # Auto-Period für sehr kurze Timeframes
     if interval == "1m":
         period = "7d"
     df = yf.download(
@@ -96,7 +95,7 @@ def download_df(ticker: str, period="60d", interval="5m") -> pd.DataFrame:
     return df
 
 
-# ========= Strategie + KI-Scoring =========
+# ========= Strategie + KI =========
 def evaluate_ticker(df: pd.DataFrame, ticker: str) -> dict:
     c = close_series(df)
     h = high_series(df)
@@ -113,10 +112,10 @@ def evaluate_ticker(df: pd.DataFrame, ticker: str) -> dict:
     momentum = rsi_now >= MIN_RSI_MOM
     buy_raw  = breakout and momentum and (pct_move >= MIN_PCT_MOVE)
 
-    # ---- KI-Score (optional; nur wenn Setup grundsätzlich passt) ----
+    # ---- KI-Score: IMMER berechnen (für Anzeige), aber nur BUY filtern wenn buy_raw True ----
     ki_score = None
     ki_pass  = True
-    if KI_SCORER_URL and buy_raw:
+    if KI_SCORER_URL:
         try:
             resp = requests.post(
                 KI_SCORER_URL,
@@ -126,7 +125,7 @@ def evaluate_ticker(df: pd.DataFrame, ticker: str) -> dict:
                     "rsi": round(rsi_now, 2),
                     "pctChange": round(pct_move, 2),
                     "breakout": bool(breakout),
-                    "momentum": bool(momentum)
+                    "momentum": bool(momentum),
                 },
                 timeout=12
             )
@@ -134,7 +133,9 @@ def evaluate_ticker(df: pd.DataFrame, ticker: str) -> dict:
                 j = resp.json()
                 if isinstance(j, dict) and "score" in j:
                     ki_score = int(j["score"])
-                    ki_pass = ki_score >= KI_SCORE_MIN
+                    # Für die Entscheidung nur relevant, wenn buy_raw bereits True ist
+                    if buy_raw:
+                        ki_pass = ki_score >= KI_SCORE_MIN
         except Exception as e:
             print(f"[KI] scorer error {ticker}: {e}")
 
@@ -211,7 +212,6 @@ def run():
         write_signals([])
         return
 
-    # Ticker laden
     if not TICKERS_FILE.exists():
         print("[ERR] tickers.txt fehlt!")
         write_signals([])
