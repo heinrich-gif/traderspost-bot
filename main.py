@@ -47,12 +47,23 @@ def to_float_scalar(x) -> float:
     except Exception:
         return float("nan")
 
+def ensure_series(col) -> pd.Series:
+    """
+    Macht aus df['Close'] o.ä. sicher eine 1D-Series (falls DataFrame geliefert wurde).
+    """
+    s = col
+    if isinstance(s, pd.DataFrame):
+        # nimm die erste Spalte
+        s = s.iloc[:, 0]
+    s = pd.to_numeric(s, errors="coerce")
+    return s
+
 def series_last_float(s: pd.Series, idx: int = -1) -> float:
     v = s.iloc[idx]
     return to_float_scalar(v)
 
 def last_n_closes(df: pd.DataFrame, n: int = 50):
-    s = pd.to_numeric(df["Close"], errors="coerce").tail(n)
+    s = ensure_series(df["Close"]).tail(n)
     return [round(float(x), 6) for x in s.tolist()]
 
 # ===================== Tickerquelle =====================
@@ -108,7 +119,9 @@ def scan_finviz(price_max=PRICE_MAX, relvol_min=RELVOL_MIN, avgvol_min=AVGVOL_MI
 
 # ===================== Technische Indikatoren =====================
 def rsi(series: pd.Series, period: int = 14) -> float:
-    s = pd.to_numeric(series, errors="coerce")
+    s = ensure_series(series)
+    if len(s) < period + 1:
+        return float("nan")
     d = s.diff()
     gain = d.clip(lower=0).rolling(window=period, min_periods=period).mean()
     loss = (-d.clip(upper=0)).rolling(window=period, min_periods=period).mean()
@@ -118,13 +131,6 @@ def rsi(series: pd.Series, period: int = 14) -> float:
 
 # ===================== KI-Analyse (SL/TP/Trailing/Qty) =====================
 def analyze_with_ki(signal: dict) -> dict:
-    """
-    Ruft den KI-Worker (KI_WEBHOOK_URL) auf.
-    Erwartete Schemata:
-      A) { stopLossPct, takeProfitPct, trailingStopPct, qty, sl_price?, tp_price? }
-      B) { sl_percent, tp_percent, trailing_percent, qty_sized, sl_price?, tp_price? }
-    Gibt einheitlich gemappte Felder zurück.
-    """
     if not KI_WEBHOOK_URL:
         return {}
 
@@ -167,7 +173,7 @@ def analyze_with_ki(signal: dict) -> dict:
                 if k in res and res[k] is not None:
                     out[k] = res[k]
 
-            # Guardrails & Ableitung der Preise
+            # Guardrails & Ableitung
             price = float(signal["price"])
             slp = out.get("sl_percent"); tpp = out.get("tp_percent"); trp = out.get("trailing_percent")
 
@@ -180,7 +186,6 @@ def analyze_with_ki(signal: dict) -> dict:
             if "tp_price" not in out and isinstance(out.get("tp_percent"), (int,float)):
                 out["tp_price"] = round(price * (1 + out["tp_percent"]/100), 4)
 
-            # Mindest-RR
             if isinstance(slp, (int,float)) and isinstance(tpp, (int,float)) and tpp <= slp * 1.2:
                 out["tp_percent"] = round(slp * 1.6, 2)
                 out["tp_price"]   = round(price * (1 + out["tp_percent"]/100), 4)
@@ -195,10 +200,6 @@ def analyze_with_ki(signal: dict) -> dict:
 
 # ===================== TradersPost Versand =====================
 def tp_send_buy(sig: dict):
-    """
-    Sendet eine BUY-Order an TradersPost-Webhook (TP_WEBHOOK_URL).
-    Unterstützt Prozent- (preferred) und Preis-Felder.
-    """
     if not TP_WEBHOOK_URL:
         return
 
@@ -210,11 +211,9 @@ def tp_send_buy(sig: dict):
         "quantity": qty,
         "order_type": "market",
         "time_in_force": "day",
-        # Prozent
         "take_profit_percent": sig.get("tp_percent"),
         "stop_loss_percent": sig.get("sl_percent"),
         "trailing_stop_percent": sig.get("trailing_percent"),
-        # Falls Preise gegeben (werden von TP ignoriert, wenn Percent aktiv ist)
         "take_profit_price": sig.get("tp_price"),
         "stop_loss_price": sig.get("sl_price"),
         "meta": {"source": "gh-actions-bot"}
@@ -231,8 +230,12 @@ def evaluate_ticker(df: pd.DataFrame, symbol: str) -> dict | None:
     if df is None or df.empty:
         return None
 
-    close = pd.to_numeric(df["Close"], errors="coerce")
-    high  = pd.to_numeric(df["High"], errors="coerce")
+    close = ensure_series(df["Close"])
+    high  = ensure_series(df["High"])
+
+    if len(close) < 3 or len(high) < 3:
+        log(f"[{symbol}] skip: not enough rows (len={len(close)})")
+        return None
 
     price = series_last_float(close, -1)
     prev_close = series_last_float(close, -2)
@@ -243,6 +246,7 @@ def evaluate_ticker(df: pd.DataFrame, symbol: str) -> dict | None:
 
     pct_move = ((price - prev_close) / prev_close) * 100.0
 
+    # Vorheriges Hoch (ohne letzte Kerze)
     tail = high.tail(BREAKOUT_LEN + 1)
     if len(tail) >= 2:
         prev_high = to_float_scalar(tail.iloc[:-1].max())
@@ -316,10 +320,9 @@ def run():
                 if enriched:
                     sig.update(enriched)
                 if not sig.get("qty_sized"):
-                    # simple Fallback-Position sizing
                     price = float(sig["price"])
                     risk_abs = ACCOUNT_EQUITY * (RISK_PCT / 100.0)
-                    qty = int(max(1, risk_abs / max(price * 0.1, 0.01)))  # sehr grob, KI überschreibt
+                    qty = int(max(1, risk_abs / max(price * 0.1, 0.01)))
                     sig["qty_sized"] = qty
                 tp_send_buy(sig)
 
