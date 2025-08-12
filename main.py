@@ -1,343 +1,330 @@
 #!/usr/bin/env python3
-import os
-import re
-import json
-import time
-from pathlib import Path
+import os, json, time, math, sys
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import List, Dict, Any, Optional
 
 import requests
-import yfinance as yf
 import pandas as pd
+import numpy as np
+import yfinance as yf
 
-# ===================== Konfiguration =====================
-PRICE_MAX     = float(os.getenv("PENNY_PRICE_MAX", 5.0))
-RELVOL_MIN    = float(os.getenv("PENNY_REL_VOL_MIN", 2.0))
-AVGVOL_MIN    = int(os.getenv("PENNY_AVG_VOL_MIN", 500_000))
-TIMEFRAME     = os.getenv("TIMEFRAME", "5m")   # 1m/5m/15m …
-BREAKOUT_LEN  = int(os.getenv("BREAKOUT_LEN", "20"))
-TOLERANCE_PCT = float(os.getenv("NEAR_BREAKOUT_PCT", "0.3"))  # 0.3%
-RSI_BUY_MAX   = float(os.getenv("BUY_RSI_MAX", "70"))
-DELTA_MIN     = float(os.getenv("BUY_DELTA_MIN", "0.0"))      # Mindest-Δ% für Momentum
+# -------------------- Config / ENV --------------------
+# Scanner / Filter
+PRICE_MAX         = float(os.getenv("PENNY_PRICE_MAX", "5"))           # $-Kappung für Finviz
+RELVOL_MIN        = float(os.getenv("PENNY_REL_VOL_MIN", "2"))          # min Relative Volume
+AVGVOL_MIN        = int(os.getenv("PENNY_AVG_VOL_MIN", "500000"))       # min Avg Vol
+RANGE_PCT_MIN     = float(os.getenv("PENNY_RANGE_PCT_MIN", "5"))        # min Tages-Range in %
+PENNY_MAX_TICKERS = int(os.getenv("PENNY_MAX_TICKERS", "30"))
 
-# KI + Risk
-KI_WEBHOOK_URL = os.getenv("KI_WEBHOOK_URL", "").strip()
-ACCOUNT_EQUITY = float(os.getenv("ACCOUNT_EQUITY", "10000"))
-RISK_PCT       = float(os.getenv("RISK_PCT", "1.0"))  # in %
+# Evaluation
+BREAKOUT_LEN      = int(os.getenv("BREAKOUT_LEN", "20"))                # n-Perioden-High
+NEAR_BREAKOUT_PCT = float(os.getenv("NEAR_BREAKOUT_PCT", "0.3"))        # Toleranz um n-High (in %)
+DELTA_MIN         = float(os.getenv("BUY_DELTA_MIN", "0.2"))            # min Intraday Bar-Delta (%)
+RSI_LEN           = int(os.getenv("RSI_LEN", "14"))
+RSI_BUY_MAX       = float(os.getenv("RSI_BUY_MAX", "70"))
+DAY_DELTA_MIN     = float(os.getenv("DAY_DELTA_MIN", "10"))             # min Tagesänderung (%); 0 = aus
 
-# TradersPost Webhook (optional)
-TP_WEBHOOK_URL = os.getenv("TP_WEBHOOK_URL", "").strip()
-DEFAULT_QTY    = int(os.getenv("POSITION_QTY", "10"))
+# KI / Orders / Risk
+KI_WEBHOOK_URL    = os.getenv("KI_WEBHOOK_URL", "").strip()
+ALWAYS_KI         = os.getenv("ALWAYS_KI", "false").lower() in ("1","true","yes")
+TP_WEBHOOK_URL    = os.getenv("TP_WEBHOOK_URL", "").strip()
+ACCOUNT_EQUITY    = float(os.getenv("ACCOUNT_EQUITY", "10000"))
+RISK_PCT          = float(os.getenv("RISK_PCT", "1.0"))
+DEFAULT_QTY       = int(os.getenv("POSITION_QTY", "10"))
 
-TICKERS_FILE  = Path("tickers.txt")
-STATE_FILE    = Path("docs/signals.json")
-EXITS_FILE = Path("docs/exits.json")
+# Output
+DOCS_DIR          = Path("docs")
+DOCS_DIR.mkdir(parents=True, exist_ok=True)
+STATE_FILE        = DOCS_DIR / "signals.json"
+EXITS_FILE        = DOCS_DIR / "exits.json"
 
-# ===================== Utils / Logging =====================
+# yfinance Defaults
+YF_INTRA_PERIOD   = os.getenv("PENNY_YF_PERIOD", "5d")
+YF_INTRA_INTERVAL = os.getenv("PENNY_YF_INTERVAL", "5m")
+
+# -------------------- Utils --------------------
 def now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
-def log(msg: str) -> None:
+def log(msg: str):
     print(f"[{now_utc_iso()}] {msg}", flush=True)
 
-def to_float_scalar(x) -> float:
+def series_last_float(ser: pd.Series, idx: int=-1) -> Optional[float]:
     try:
-        if hasattr(x, "item"):
-            return float(x.item())
-        return float(x)
+        return float(ser.iloc[idx])
     except Exception:
-        return float("nan")
+        return None
 
-def ensure_series(col) -> pd.Series:
+def rsi(close: pd.Series, period: int) -> float:
+    # klassisches RSI (Wilder)
+    delta = close.diff()
+    gain = (delta.where(delta > 0, 0.0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0.0)).rolling(window=period).mean()
+    rs = gain / (loss + 1e-12)
+    out = 100 - (100 / (1 + rs))
+    return float(out.iloc[-1])
+
+def get_prev_close_daily(ticker: str) -> Optional[float]:
+    try:
+        df = yf.download(ticker, period="2d", interval="1d", progress=False, auto_adjust=True, prepost=False, threads=False)
+        if df is None or len(df) < 2:
+            return None
+        return float(df["Close"].iloc[-2])
+    except Exception:
+        return None
+
+def spark_from_series(close: pd.Series, n: int=50) -> List[float]:
+    s = close.tail(n).astype(float).tolist()
+    return [round(x, 6) for x in s]
+
+# -------------------- Finviz Scan (HTML) --------------------
+def scan_finviz(price_max=PRICE_MAX, relvol_min=RELVOL_MIN, avgvol_min=AVGVOL_MIN, limit=PENNY_MAX_TICKERS) -> List[str]:
     """
-    Macht aus df['Close'] o.ä. sicher eine 1D-Series (falls DataFrame geliefert wurde).
+    Holt Ticker aus Finviz per read_html + HTML-Filter.
+    Wir verwenden die Filter via URL:
+      sh_price_u{max}, sh_relvol_o{min}, sh_avgvol_o{min}
     """
-    s = col
-    if isinstance(s, pd.DataFrame):
-        # nimm die erste Spalte
-        s = s.iloc[:, 0]
-    s = pd.to_numeric(s, errors="coerce")
-    return s
-
-def series_last_float(s: pd.Series, idx: int = -1) -> float:
-    v = s.iloc[idx]
-    return to_float_scalar(v)
-
-def last_n_closes(df: pd.DataFrame, n: int = 50):
-    s = ensure_series(df["Close"]).tail(n)
-    return [round(float(x), 6) for x in s.tolist()]
-
-# ===================== Tickerquelle =====================
-def get_tickers_from_file() -> list[str]:
-    if TICKERS_FILE.exists():
-        xs = [l.strip().upper() for l in TICKERS_FILE.read_text().splitlines()]
-        xs = [x for x in xs if x and not x.startswith("#")]
-        if xs:
-            log(f"[TICKERS] using tickers.txt -> {xs}")
-            return xs
-    return []
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://finviz.com/screener.ashx?v=111"
-}
-
-def scan_finviz(price_max=PRICE_MAX, relvol_min=RELVOL_MIN, avgvol_min=AVGVOL_MIN,
-                max_pages=10, pause=0.6) -> list[str]:
-    f_price = f"sh_price_u{int(price_max)}"
-    f_relvo = f"sh_relvol_o{int(relvol_min)}"
-    f_avgvo = f"sh_avgvol_o{int(avgvol_min // 1000)}"
     base = "https://finviz.com/screener.ashx"
-    seen, tickers = set(), []
-    for page in range(max_pages):
-        r_start = page * 20 + 1
-        params = {"v": 111, "f": ",".join([f_price, f_relvo, f_avgvo]), "r": r_start}
-        try:
-            resp = requests.get(base, params=params, headers=HEADERS, timeout=15)
-            html = resp.text
-            log(f"[SCAN] page={page+1} url={resp.url} len={len(html)}")
-            page_tickers = re.findall(
-                r'class="screener-link-primary"[^>]*>\s*([A-Z0-9.\-]{1,8})\s*</a>',
-                html, flags=re.I
-            )
-            page_tickers = [t.upper() for t in page_tickers if 1 <= len(t) <= 8 and t.replace('.', '').replace('-', '').isalnum()]
-            page_tickers = [t for t in page_tickers if not any(ch in t for ch in "%()")]
-            added = 0
-            for t in page_tickers:
-                if t not in seen:
-                    seen.add(t); tickers.append(t); added += 1
-            log(f"[SCAN] page {page+1}: +{added} tickers, total={len(tickers)}")
-            if len(page_tickers) < 20:
+    params = f"v=111&f=sh_price_u{int(price_max)}%2Csh_relvol_o{relvol_min}%2Csh_avgvol_o{int(avgvol_min)}&r=1"
+    url = f"{base}?{params}"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        log(f"[SCAN] page=1 url={url} len={len(resp.text)}")
+        # Tabellen ziehen
+        tables = pd.read_html(resp.text)
+        # Ticker steht i. d. R. in der großen Ergebnistabelle in Spalte "Ticker"
+        tickers: List[str] = []
+        for t in tables:
+            cols = [c for c in t.columns]
+            if any("Ticker" == str(c) for c in cols):
+                tickers += [str(x).strip().upper() for x in t["Ticker"].tolist() if isinstance(x, str)]
+        # dedup + begrenzen
+        out = []
+        for tk in tickers:
+            if tk not in out and tk.isalnum():
+                out.append(tk)
+            if len(out) >= limit:
                 break
-        except Exception as e:
-            log(f"[SCAN] Finviz-Fehler (Seite {page+1}): {e}")
-            break
-        time.sleep(pause)
-    log(f"[SCAN] Finviz-Kandidaten: {len(tickers)} -> {tickers[:20]} …")
-    return tickers
+        log(f"[SCAN] Finviz-Kandidaten: {len(out)} -> {out[:18]} …")
+        return out
+    except Exception as e:
+        log(f"[SCAN-ERR] Finviz: {e}")
+        return []
 
-# ===================== Technische Indikatoren =====================
-def rsi(series: pd.Series, period: int = 14) -> float:
-    s = ensure_series(series)
-    if len(s) < period + 1:
-        return float("nan")
-    d = s.diff()
-    gain = d.clip(lower=0).rolling(window=period, min_periods=period).mean()
-    loss = (-d.clip(upper=0)).rolling(window=period, min_periods=period).mean()
-    rs = gain / loss
-    rsi_series = 100 - (100 / (1 + rs))
-    return to_float_scalar(rsi_series.iloc[-1])
+def get_tickers_from_file(path="tickers.txt") -> List[str]:
+    p = Path(path)
+    if not p.exists():
+        return []
+    raw = [ln.strip().upper() for ln in p.read_text(encoding="utf-8", errors="ignore").splitlines()]
+    return [t for t in raw if t and not t.startswith("#")]
 
-# ===================== KI-Analyse (SL/TP/Trailing/Qty) =====================
-def analyze_with_ki(signal: dict) -> dict:
+# -------------------- KI / TP / Exits --------------------
+def analyze_with_ki(signal: Dict[str, Any]) -> Dict[str, Any]:
     if not KI_WEBHOOK_URL:
         return {}
-
     payload = {
         "symbol": signal["symbol"],
         "price": signal["price"],
         "recommendation": signal["recommendation"],
         "rsi": signal["rsi"],
         "pct_move": signal["pct_move"],
+        "day_change": signal.get("day_change"),
         "breakout": signal["breakout"],
         "momentum": signal["momentum"],
         "equity": ACCOUNT_EQUITY,
         "risk_pct": RISK_PCT,
-        "spark": signal.get("spark", []),
     }
-
-    for attempt in range(2):
-        try:
-            r = requests.post(KI_WEBHOOK_URL, json=payload, timeout=20)
-            if not r.ok:
-                log(f"[KI] HTTP {r.status_code}: {r.text[:300]}")
-                return {}
+    try:
+        r = requests.post(KI_WEBHOOK_URL, json=payload, timeout=15)
+        if r.ok:
             data = r.json()
-            res = data.get("result") if isinstance(data, dict) and "result" in data else data
-            if not isinstance(res, dict):
-                log("[KI] invalid response shape")
-                return {}
-
+            # Wir akzeptieren sl/tp/trailing als % oder price; qty optional
             out = {}
-            # Schema A
-            if "stopLossPct" in res or "takeProfitPct" in res or "trailingStopPct" in res:
-                if res.get("stopLossPct") is not None:     out["sl_percent"] = float(res["stopLossPct"])
-                if res.get("takeProfitPct") is not None:   out["tp_percent"] = float(res["takeProfitPct"])
-                if res.get("trailingStopPct") is not None: out["trailing_percent"] = float(res["trailingStopPct"])
-                if res.get("qty") is not None:             out["qty_sized"] = int(res["qty"])
-
-            # Schema B (+ Extras)
-            for k in ("sl_percent","tp_percent","trailing_percent","sl_price","tp_price","qty_sized",
-                      "equity_used","risk_pct_used","ki_score","ki_min","ki_pass","rationale","analyzed_at"):
-                if k in res and res[k] is not None:
-                    out[k] = res[k]
-
-            # Guardrails & Ableitung
-            price = float(signal["price"])
-            slp = out.get("sl_percent"); tpp = out.get("tp_percent"); trp = out.get("trailing_percent")
-
-            if isinstance(slp, (int,float)) and slp < 0: out["sl_percent"] = None
-            if isinstance(tpp, (int,float)) and tpp < 0: out["tp_percent"] = None
-            if isinstance(trp, (int,float)) and trp < 0: out["trailing_percent"] = None
-
-            if "sl_price" not in out and isinstance(out.get("sl_percent"), (int,float)):
-                out["sl_price"] = round(price * (1 - out["sl_percent"]/100), 4)
-            if "tp_price" not in out and isinstance(out.get("tp_percent"), (int,float)):
-                out["tp_price"] = round(price * (1 + out["tp_percent"]/100), 4)
-
-            if isinstance(slp, (int,float)) and isinstance(tpp, (int,float)) and tpp <= slp * 1.2:
-                out["tp_percent"] = round(slp * 1.6, 2)
-                out["tp_price"]   = round(price * (1 + out["tp_percent"]/100), 4)
-
+            for k in ("sl_percent","tp_percent","trailing_percent","sl_price","tp_price","qty_sized","ki_score"):
+                if k in data:
+                    out[k] = data[k]
+            log(f"[KI] {signal['symbol']} -> {data}")
             return out
+        else:
+            log(f"[KI-ERR] {signal['symbol']} -> {r.status_code} {r.text[:240]}")
+            return {}
+    except Exception as e:
+        log(f"[KI-EXC] {signal['symbol']}: {e}")
+        return {}
 
-        except requests.RequestException as e:
-            log(f"[KI] attempt {attempt+1} error: {e}")
-            time.sleep(0.6)
+def size_qty(price: float) -> int:
+    # sehr einfache risikobasierte Positionsgröße
+    risk_abs = ACCOUNT_EQUITY * (RISK_PCT/100.0)
+    # als Proxy nehmen wir 10 % des Kurses als "Stop-Abstand" – konservativ
+    stop_proxy = max(price * 0.10, 0.01)
+    qty = int(max(1, risk_abs / stop_proxy))
+    return qty
 
-    return {}
-
-# ===================== TradersPost Versand =====================
-def tp_send_buy(sig: dict):
+def tp_send_buy(sig: Dict[str, Any]):
     if not TP_WEBHOOK_URL:
         return
-
     qty = int(sig.get("qty_sized") or sig.get("qty") or DEFAULT_QTY)
-
-    payload = {
+    payload: Dict[str, Any] = {
         "ticker": sig["symbol"],
         "action": "buy",
         "quantity": qty,
         "order_type": "market",
         "time_in_force": "day",
-        "take_profit_percent": sig.get("tp_percent"),
-        "stop_loss_percent": sig.get("sl_percent"),
-        "trailing_stop_percent": sig.get("trailing_percent"),
-        "take_profit_price": sig.get("tp_price"),
-        "stop_loss_price": sig.get("sl_price"),
         "meta": {"source": "gh-actions-bot"}
     }
+    # Nur Felder setzen, die existieren (sonst überschreibt TP mit Defaults)
+    if sig.get("tp_percent") is not None:       payload["take_profit_percent"] = sig["tp_percent"]
+    if sig.get("sl_percent") is not None:       payload["stop_loss_percent"] = sig["sl_percent"]
+    if sig.get("trailing_percent") is not None: payload["trailing_stop_percent"] = sig["trailing_percent"]
+    if sig.get("tp_price") is not None:         payload["take_profit_price"] = sig["tp_price"]
+    if sig.get("sl_price") is not None:         payload["stop_loss_price"] = sig["sl_price"]
 
+    log(f"[TP BUY][payload] {payload}")
     try:
-        r = requests.post(TP_WEBHOOK_URL, json=payload, timeout=15)
+        r = requests.post(TP_WEBHOOK_URL, json=payload, timeout=20)
         log(f"[TP BUY] {sig['symbol']} qty={qty} -> {r.status_code} {r.text[:240]}")
     except Exception as e:
         log(f"[TP BUY] send failed: {e}")
 
-# ===================== Evaluierung pro Ticker =====================
-def evaluate_ticker(df: pd.DataFrame, symbol: str) -> dict | None:
-    if df is None or df.empty:
-        return None
-
-    close = ensure_series(df["Close"])
-    high  = ensure_series(df["High"])
-
-    if len(close) < 3 or len(high) < 3:
-        log(f"[{symbol}] skip: not enough rows (len={len(close)})")
-        return None
-
-    price = series_last_float(close, -1)
-    prev_close = series_last_float(close, -2)
-
-    if not (price == price) or not (prev_close == prev_close) or prev_close == 0.0:
-        log(f"[{symbol}] skip: bad price/prev_close (price={price}, prev_close={prev_close})")
-        return None
-
-    pct_move = ((price - prev_close) / prev_close) * 100.0
-
-    # Vorheriges Hoch (ohne letzte Kerze)
-    tail = high.tail(BREAKOUT_LEN + 1)
-    if len(tail) >= 2:
-        prev_high = to_float_scalar(tail.iloc[:-1].max())
-    else:
-        prev_high = to_float_scalar(high.max())
-
-    tol_abs = prev_high * (TOLERANCE_PCT / 100.0)
-    breakout = bool(price >= (prev_high - tol_abs))
-
-    rsi_now = rsi(close, 14)
-    momentum = bool(pct_move >= DELTA_MIN)
-
-    buy_raw = bool(breakout and momentum and (rsi_now <= RSI_BUY_MAX))
-    recommendation = "BUY" if buy_raw else "HOLD"
-
-    log(
-        f"[{symbol}] price={price:.4f} rsi={rsi_now:.2f} Δ%={pct_move:.2f} "
-        f"prevHigh{BREAKOUT_LEN}={prev_high:.4f} tol={TOLERANCE_PCT:.3f}% "
-        f"breakout={breakout} momentum={momentum} -> {recommendation}"
-    )
-
-    return {
+def log_exit(symbol: str, price: float, reason: str):
+    try:
+        if EXITS_FILE.exists():
+            exits = json.loads(EXITS_FILE.read_text(encoding="utf-8"))
+            if not isinstance(exits, list): exits = []
+        else:
+            exits = []
+    except Exception:
+        exits = []
+    exits.append({
         "timestamp": now_utc_iso(),
         "symbol": symbol,
         "price": round(price, 4),
-        "pct_move": round(pct_move, 2),
-        "rsi": round(rsi_now, 2),
-        "breakout": breakout,
-        "momentum": momentum,
-        "prev_high_n": BREAKOUT_LEN,
-        "prev_high_value": round(prev_high, 4),
-        "near_breakout_pct": TOLERANCE_PCT,
-        "recommendation": recommendation
-    }
+        "reason": reason
+    })
+    EXITS_FILE.write_text(json.dumps(exits, indent=2), encoding="utf-8")
+    log(f"[EXIT] {symbol} @ {price} -> {reason} (exits.json)")
 
-# ===================== Main-Run =====================
+# -------------------- Evaluation --------------------
+def evaluate_ticker(symbol: str) -> Optional[Dict[str, Any]]:
+    try:
+        log(f"[{symbol}] downloading…")
+        df = yf.download(symbol, period=YF_INTRA_PERIOD, interval=YF_INTRA_INTERVAL,
+                         progress=False, auto_adjust=True, prepost=True, threads=False)
+        if df is None or len(df) < (RSI_LEN + BREAKOUT_LEN + 2):
+            log(f"[{symbol}] not enough data ({len(df) if df is not None else 0})")
+            return None
+
+        close = df["Close"].astype(float)
+        high  = df["High"].astype(float)
+
+        price       = series_last_float(close, -1)
+        prev_close  = series_last_float(close, -2)
+        if price is None or prev_close is None:
+            return None
+
+        # Intraday Momentum (letzte Bar vs. vorherige)
+        pct_move = ((price - prev_close) / max(1e-9, prev_close)) * 100.0
+
+        # Tages-Change (vs. Vortages-Close)
+        prev_day_close = get_prev_close_daily(symbol)
+        day_change = None
+        if prev_day_close and prev_day_close != 0:
+            day_change = ((price - prev_day_close) / prev_day_close) * 100.0
+
+        # Breakout-Check
+        prev_high = float(high.tail(BREAKOUT_LEN).max())
+        tol_abs   = prev_high * (NEAR_BREAKOUT_PCT / 100.0)
+        breakout  = bool(price >= (prev_high - tol_abs))
+
+        # RSI
+        rsi_now = rsi(close, RSI_LEN)
+
+        # Momentum
+        momentum = bool(pct_move >= DELTA_MIN)
+
+        # Day-Filter
+        day_ok = True
+        if day_change is not None and DAY_DELTA_MIN > 0:
+            day_ok = (day_change >= DAY_DELTA_MIN)
+
+        buy_raw = bool(breakout and momentum and (rsi_now <= RSI_BUY_MAX) and day_ok)
+        recommendation = "BUY" if buy_raw else "HOLD"
+
+        log(
+            f"[{symbol}] price={price:.4f} rsi={rsi_now:.2f} Δ%={pct_move:.2f} "
+            f"DayΔ%={(day_change if day_change is not None else float('nan')):.2f} "
+            f"prevHigh{BREAKOUT_LEN}={prev_high:.4f} tol={NEAR_BREAKOUT_PCT:.3f}% "
+            f"breakout={breakout} momentum={momentum} day_ok={day_ok} -> {recommendation}"
+        )
+
+        rec = {
+            "timestamp": now_utc_iso(),
+            "symbol": symbol,
+            "price": round(price, 4),
+            "pct_move": round(pct_move, 2),
+            "day_change": round(day_change, 2) if day_change is not None else None,
+            "rsi": round(rsi_now, 2),
+            "breakout": breakout,
+            "momentum": momentum,
+            "prev_high_n": BREAKOUT_LEN,
+            "prev_high_value": round(prev_high, 4),
+            "near_breakout_pct": NEAR_BREAKOUT_PCT,
+            "recommendation": recommendation,
+            "spark": spark_from_series(close, 50),
+        }
+
+        # KI anreichern (bei BUY oder wenn ALWAYS_KI=true)
+        run_ki = (recommendation == "BUY") or ALWAYS_KI
+        if run_ki:
+            enriched = analyze_with_ki(rec)
+            if enriched:
+                rec.update(enriched)
+
+        # TradersPost nur bei BUY
+        if recommendation == "BUY":
+            if rec.get("qty_sized") is None:
+                rec["qty_sized"] = size_qty(price)
+            tp_send_buy(rec)
+
+        return rec
+
+    except Exception as e:
+        log(f"[ERR] {symbol}: {e}")
+        return None
+
+# -------------------- Main Loop --------------------
 def run():
-    log(">>> Starting main.py …")
+    print(">>> Starting main.py …", flush=True)
 
-    # 1) tickers.txt bevorzugen
-    tickers = get_tickers_from_file()
+    # Ticker-Liste bauen: tickers.txt + Finviz (merge, dedup)
+    tickers: List[str] = []
+    watch = get_tickers_from_file()
+    if watch:
+        tickers.extend([t for t in watch if t not in tickers])
+    scan  = scan_finviz()
+    for t in scan:
+        if t not in tickers:
+            tickers.append(t)
 
-    # 2) Fallback: Finviz-Scan
     if not tickers:
-        tickers = scan_finviz(PRICE_MAX, RELVOL_MIN, AVGVOL_MIN)
+        log("[TICKERS] none found")
+        STATE_FILE.write_text("[]", encoding="utf-8")
+        return
 
-    final_signals = []
+    log(f"[TICKERS] merged total={len(tickers)} -> {tickers[:20]}")
 
+    results: List[Dict[str, Any]] = []
     for t in tickers:
-        try:
-            log(f"[{t}] downloading…")
-            df = yf.download(
-                t, period="5d", interval=TIMEFRAME,
-                progress=False, auto_adjust=True, prepost=True,
-                threads=False
-            )
-            if df is None or df.empty:
-                log(f"[{t}] empty dataframe")
-                continue
+        rec = evaluate_ticker(t)
+        if rec:
+            results.append(rec)
 
-            sig = evaluate_ticker(df, t)
-            if not sig:
-                continue
-
-            # Sparkline für Dashboard & KI
-            sig["spark"] = last_n_closes(df, 50)
-
-            # KI + TP bei BUY
-            if sig["recommendation"] == "BUY":
-                enriched = analyze_with_ki(sig)
-                if enriched:
-                    sig.update(enriched)
-                if not sig.get("qty_sized"):
-                    price = float(sig["price"])
-                    risk_abs = ACCOUNT_EQUITY * (RISK_PCT / 100.0)
-                    qty = int(max(1, risk_abs / max(price * 0.1, 0.01)))
-                    sig["qty_sized"] = qty
-                tp_send_buy(sig)
-
-            final_signals.append(sig)
-
-        except Exception as e:
-            log(f"[ERR] {t}: {e}")
-
-        time.sleep(0.12)  # sanfte Rate
-
-    # Schreiben
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(json.dumps(final_signals, indent=2))
-    log(f"[WRITE] {STATE_FILE} -> {len(final_signals)} Zeilen")
+    # Schreiben fürs Dashboard
+    STATE_FILE.write_text(json.dumps(results, indent=2), encoding="utf-8")
+    log(f"[WRITE] {STATE_FILE} -> {len(results)} Zeilen")
 
 if __name__ == "__main__":
     run()
