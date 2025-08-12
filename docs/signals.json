@@ -1,0 +1,13 @@
+{
+  "generated_at": "2025-08-12T07:53:13.256795+00:00",
+  "timeframe": "5m",
+  "breakout_len": 20,
+  "min_pct_move": 5.0,
+  "min_rsi_mom": 50.0,
+  "risk_profile": {
+    "tp_percent": 25.0,
+    "sl_percent": 9.0,
+    "trailing_percent": 6.0
+  },
+  "signals": []
+}
