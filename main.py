@@ -11,12 +11,17 @@ BREAKOUT_LEN   = int(os.getenv("BREAKOUT_LEN", "20"))
 MIN_PCT_MOVE   = float(os.getenv("MIN_PCT_MOVE", "5.0"))
 MIN_RSI_MOM    = float(os.getenv("MIN_RSI_MOM", "50.0"))
 
-# Risk-Empfehlungen (wie besprochen)
+# Risk-Empfehlungen
 TP_PCT         = float(os.getenv("TP_PCT", "25"))  # %
 SL_PCT         = float(os.getenv("SL_PCT", "9"))   # %
 TRAIL_PCT      = float(os.getenv("TRAIL_PCT", "6"))# %
 
 OUTPUT_PATH    = os.getenv("OUTPUT_PATH", "docs/signals.json")
+
+# Optional: KI-Score (separater Scoring-Endpoint)
+# Erwartet JSON-Response mit {"score": 0..100, "result": "..."} – wenn None/Fehler: kein Score
+KI_SCORER_URL  = os.getenv("KI_SCORER_URL", "").strip()
+KI_SCORE_MIN   = int(os.getenv("KI_SCORE_MIN", "60"))
 
 # ==== Session-Filter: US extended (Pre/Regular/After) ====
 def is_us_extended_utc(dt: datetime) -> bool:
@@ -48,6 +53,10 @@ def download_data(ticker: str) -> pd.DataFrame:
         print(f"[WARN] {ticker} download: {e}")
         return pd.DataFrame()
 
+def last_n_closes(df: pd.DataFrame, n: int = 50):
+    s = df["Close"].tail(n)
+    return [round(float(x), 6) for x in s.to_list()]
+
 # ==== Strategie (Breakout + Momentum) ====
 def evaluate_ticker(df: pd.DataFrame, ticker: str):
     price = float(df["Close"].iloc[-1])
@@ -58,6 +67,18 @@ def evaluate_ticker(df: pd.DataFrame, ticker: str):
     breakout  = price > prev_high
     momentum  = rsi >= MIN_RSI_MOM
     buy = breakout and momentum and (pct_move >= MIN_PCT_MOVE)
+
+    # Optionaler KI-Score
+    ki_score = None
+    if KI_SCORER_URL and buy:
+        try:
+            r = requests.post(KI_SCORER_URL, json={"symbol": ticker, "action": "buy", "price": price}, timeout=10)
+            if r.status_code >= 200 and r.status_code < 300:
+                j = r.json()
+                if isinstance(j, dict) and "score" in j:
+                    ki_score = int(j["score"])
+        except Exception as e:
+            print(f"[KI] score error {ticker}: {e}")
 
     rec = {
         "symbol": ticker,
@@ -75,9 +96,13 @@ def evaluate_ticker(df: pd.DataFrame, ticker: str):
         "trailing_percent": TRAIL_PCT if buy else None,
         "tp_price": round(price * (1 + TP_PCT/100), 4) if buy else None,
         "sl_price": round(price * (1 - SL_PCT/100), 4) if buy else None,
+        "ki_score": ki_score,
+        "ki_pass": (ki_score is None) or (ki_score >= KI_SCORE_MIN),
+        "spark": last_n_closes(df, 50),
         "timestamp": datetime.now(timezone.utc).isoformat()
     }
-    print(f"[{ticker}] price={price:.2f} rsi={rsi:.2f} Δ%={pct_move:.2f} breakout={breakout} mom={momentum} -> {rec['recommendation']}")
+    print(f"[{ticker}] price={price:.2f} rsi={rsi:.2f} Δ%={pct_move:.2f} breakout={breakout} mom={momentum} "
+          f"-> {rec['recommendation']} ki={ki_score}")
     return rec
 
 # ==== JSON schreiben ====
@@ -90,6 +115,7 @@ def write_signals(signals, path=OUTPUT_PATH):
         "min_pct_move": MIN_PCT_MOVE,
         "min_rsi_mom": MIN_RSI_MOM,
         "risk_profile": {"tp_percent": TP_PCT, "sl_percent": SL_PCT, "trailing_percent": TRAIL_PCT},
+        "ki": {"min_score": KI_SCORE_MIN, "scorer_url_set": bool(KI_SCORER_URL)},
         "signals": signals
     }
     with open(path, "w") as f:
@@ -101,12 +127,10 @@ def run():
     now_utc = datetime.now(timezone.utc)
     if not is_us_extended_utc(now_utc):
         print(f"[SKIP] Outside US extended session (UTC {now_utc.isoformat()})")
-        # Auch außerhalb: leere Datei schreiben, damit die Seite nicht „alt“ wirkt
         write_signals([])
         return
 
-    # Ticker-Liste: nimm deine Finviz-Scans (tickers.txt) falls vorhanden, sonst fallback
-    tickers = []
+    # Ticker aus tickers.txt (vom Finviz-Scanner) – sonst Fallback
     try:
         with open("tickers.txt") as f:
             tickers = [x.strip() for x in f if x.strip() and not x.startswith("#")]
@@ -120,7 +144,7 @@ def run():
         if df.empty:
             continue
         recs.append(evaluate_ticker(df, t))
-        time.sleep(0.15)
+        time.sleep(0.1)
 
     write_signals(recs)
 
