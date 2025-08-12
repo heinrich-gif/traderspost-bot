@@ -7,3 +7,4 @@ python-dotenv
 beautifulsoup4
 lxml
 html5lib
+finvizfinance>=0.14.5
