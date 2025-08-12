@@ -14,13 +14,15 @@ POSITION_QTY       = int(os.getenv("POSITION_QTY", "10"))          # Fallback, f
 
 # Setup-Regeln
 BREAKOUT_LEN       = int(os.getenv("BREAKOUT_LEN", "20"))
-MIN_PCT_MOVE       = float(os.getenv("MIN_PCT_MOVE", "5.0"))       # wird weiter unten NICHT mehr für BUY genutzt
-MIN_RSI_MOM        = float(os.getenv("MIN_RSI_MOM", "50.0"))       # nur noch Info
 NEAR_BREAKOUT_PCT  = float(os.getenv("NEAR_BREAKOUT_PCT", "0.3"))  # Toleranz in %, z.B. 0.3
 
-# Neue aggressivere BUY-Schwellen
+# Aggressive BUY-Schwellen
 BUY_RSI_MAX        = float(os.getenv("BUY_RSI_MAX", "65"))         # BUY zulassen bis zu diesem RSI
 BUY_DELTA_MIN      = float(os.getenv("BUY_DELTA_MIN", "0.5"))      # Mindest-Δ% für BUY (z.B. 0.5%)
+
+# (Nur Info/Badge – nicht mehr kaufentscheidend)
+MIN_PCT_MOVE       = float(os.getenv("MIN_PCT_MOVE", "5.0"))
+MIN_RSI_MOM        = float(os.getenv("MIN_RSI_MOM", "50.0"))
 
 # KI-Scoring (Badge/Filter)
 KI_SCORER_URL      = os.getenv("KI_SCORER_URL", "").strip()
@@ -202,19 +204,30 @@ def evaluate_ticker(df: pd.DataFrame, ticker: str) -> dict:
     near_breakout = (price >= prev_high_raw - tolerance)
 
     rsi_now = float(rsi(c).iloc[-1])
-    momentum = rsi_now >= MIN_RSI_MOM  # nur Info/Badge
+    momentum = rsi_now >= MIN_RSI_MOM  # Info/Badge
 
-    # >>> AGGRESSIVE BUY-LOGIK <<<
-    # BUY, wenn (RSI <= BUY_RSI_MAX und Δ% >= BUY_DELTA_MIN) ODER Near-Breakout
-    buy_raw = ((rsi_now <= BUY_RSI_MAX and pct_move >= BUY_DELTA_MIN) or near_breakout)
+    # >>> AGGRESSIVE BUY-LOGIK (mit Debug) <<<
+    cond_rsi_delta = (rsi_now <= BUY_RSI_MAX) and (pct_move >= BUY_DELTA_MIN)
+    cond_near_bo   = near_breakout
 
-    # KI-Score (Badge immer; BUY nur filtern, wenn buy_raw True)
+    buy_raw = cond_rsi_delta or cond_near_bo
+    buy_reasons = []
+    if cond_rsi_delta: buy_reasons.append(f"RSI<= {BUY_RSI_MAX} & Δ%>= {BUY_DELTA_MIN}")
+    if cond_near_bo:   buy_reasons.append(f"NearBreakout({NEAR_BREAKOUT_PCT}%)")
+
+    # KI: Wenn kein Scorer gesetzt oder keine Zahl kommt -> NICHT blockieren
     ki_score, _ = score_with_ki(ticker, price, rsi_now, pct_move, near_breakout, momentum)
-    ki_pass = True
-    if buy_raw and (ki_score is not None):
-        ki_pass = ki_score >= KI_SCORE_MIN
+    ki_ok = (KI_SCORER_URL == "") or (ki_score is None) or (ki_score >= KI_SCORE_MIN)
 
-    recommendation = "BUY" if (buy_raw and ki_pass) else "HOLD"
+    recommendation = "BUY" if (buy_raw and ki_ok) else "HOLD"
+
+    print(
+        f"[{ticker}] price={price:.4f} rsi={rsi_now:.2f} Δ%={pct_move:.2f} "
+        f"prevHigh{window}={prev_high:.4f} tol={NEAR_BREAKOUT_PCT:.3f}% "
+        f"nearBO={near_breakout} | cond_rsi_delta={cond_rsi_delta} cond_near_bo={cond_near_bo} "
+        f"raw={buy_raw} reasons={'+'.join(buy_reasons) or '—'} "
+        f"ki={ki_score} ki_ok={ki_ok} -> {recommendation}"
+    )
 
     rec = {
         "symbol": ticker,
@@ -229,7 +242,7 @@ def evaluate_ticker(df: pd.DataFrame, ticker: str) -> dict:
         "recommendation": recommendation,
         "qty": POSITION_QTY if recommendation == "BUY" else 0,
         "ki_score": ki_score,
-        "ki_pass": ki_pass,
+        "ki_pass": (ki_score is None) or (ki_score >= KI_SCORE_MIN),
         "timestamp": now_utc_iso(),
         "spark": last_n_closes(df, 50),
         # Platzhalter für KI-Analyse
@@ -240,39 +253,39 @@ def evaluate_ticker(df: pd.DataFrame, ticker: str) -> dict:
         "tp_price": None,
         "qty_sized": None,
     }
-
-    print(
-        f"[{ticker}] price={price:.4f} rsi={rsi_now:.2f} Δ%={pct_move:.2f} "
-        f"prevHigh{window}={prev_high:.4f} tol={NEAR_BREAKOUT_PCT:.3f}% "
-        f"nearBO={near_breakout} (RSI<= {BUY_RSI_MAX} & Δ%>= {BUY_DELTA_MIN}) -> raw={buy_raw} "
-        f"ki={ki_score} pass={ki_pass} -> {recommendation}"
-    )
     return rec
 
 
-# ========= TradersPost Versand =========
+# ========= TradersPost Versand (gefixt: 'ticker') =========
 def send_to_traderspost(sig: dict):
     if not TP_WEBHOOK_URL or sig["recommendation"] != "BUY":
         return
+
     qty = int(sig.get("qty_sized") or sig.get("qty") or POSITION_QTY)
+
     payload = {
-        "symbol": sig["symbol"],
+        "ticker": sig["symbol"],            # WICHTIG: 'ticker', nicht 'symbol'
         "action": "buy",
         "quantity": qty,
-        "price": sig["price"],
-        "tp_percent": sig.get("tp_percent"),
-        "sl_percent": sig.get("sl_percent"),
-        "trailing_percent": sig.get("trailing_percent"),
-        "tp_price": sig.get("tp_price"),
-        "sl_price": sig.get("sl_price"),
+        "order_type": "market",
+        "time_in_force": "day",
+        # optionale Risk-Parameter (falls euer TP-Webhook sie versteht)
+        "take_profit_percent": sig.get("tp_percent"),
+        "stop_loss_percent": sig.get("sl_percent"),
+        "trailing_stop_percent": sig.get("trailing_percent"),
+        # Preise alternativ:
+        # "take_profit_price": sig.get("tp_price"),
+        # "stop_loss_price": sig.get("sl_price"),
         "meta": {
+            "source": "gh-actions-bot",
             "ki_score": sig.get("ki_score"),
-            "ki_pass": sig.get("ki_pass"),
+            "ki_pass": sig.get("ki_pass")
         }
     }
     try:
         r = requests.post(TP_WEBHOOK_URL, json=payload, timeout=12)
-        print(f"[TP] {sig['symbol']} -> {r.status_code} {r.text[:160]}")
+        body = r.text.strip()
+        print(f"[TP] req={payload} -> {r.status_code} {body[:300]}")
     except Exception as e:
         print(f"[TP] send failed: {e}")
 
@@ -301,6 +314,10 @@ def write_signals(signals: list, path: Path = OUTPUT_PATH):
 # ========= Main =========
 def run():
     now = datetime.now(timezone.utc)
+    print(f"[CFG] TF={TIMEFRAME} BUY_RSI_MAX={BUY_RSI_MAX} BUY_DELTA_MIN={BUY_DELTA_MIN} "
+          f"NEAR_BO%={NEAR_BREAKOUT_PCT} KI_MIN={KI_SCORE_MIN} "
+          f"SCORER={'on' if KI_SCORER_URL else 'off'} ANALYSE={'on' if KI_WEBHOOK_URL else 'off'}")
+
     if not is_us_extended_utc(now):
         print(f"[SKIP] Outside US extended session (UTC {now.isoformat()})")
         write_signals([])
@@ -324,6 +341,7 @@ def run():
                 continue
 
             sig = evaluate_ticker(df, t)
+            decided = sig["recommendation"]  # Guard
 
             # BUY → KI-Analyse (SL/TP/Trailing/Qty) + optional TP-Order
             if sig["recommendation"] == "BUY":
@@ -338,6 +356,9 @@ def run():
                 if not sig.get("qty_sized"):
                     sig["qty_sized"] = sig.get("qty", POSITION_QTY)
                 send_to_traderspost(sig)
+
+            if sig["recommendation"] != decided:
+                print(f"[WARN] {t}: recommendation changed from {decided} -> {sig['recommendation']} AFTER enrichment")
 
             signals.append(sig)
 
