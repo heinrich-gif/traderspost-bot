@@ -1,40 +1,48 @@
 import os
 import json
-import requests
+import pandas as pd
 import yfinance as yf
-from datetime import datetime
+from datetime import datetime, timezone
 from finvizfinance.screener.overview import Overview
+import requests
 
-# ========= Einstellungen =========
-ACCOUNT_EQUITY = float(os.getenv("ACCOUNT_EQUITY", "1000"))
-RISK_PCT = float(os.getenv("RISK_PCT", "0.25"))  # 25% Standard
-KI_WEBHOOK_URL = os.getenv("KI_WEBHOOK_URL", "").strip()
-TP_API_KEY = os.getenv("TRADERSPOST_API_KEY", "").strip()
-TP_STRATEGY_ID = os.getenv("TRADERSPOST_STRATEGY_ID", "").strip()
+# ==== CONFIG ====
+TIMEFRAME = os.getenv("TIMEFRAME", "5m")
+KI_WEBHOOK_URL = os.getenv("KI_WEBHOOK_URL", "")
+TP_WEBHOOK_URL = os.getenv("TP_WEBHOOK_URL", "")
+ACCOUNT_EQUITY = float(os.getenv("ACCOUNT_EQUITY", "10000"))
+RISK_PCT = float(os.getenv("RISK_PCT", "0.02"))  # 2%
+
+BREAKOUT_LEN = 20
+DELTA_TOL = 0.3  # % Toleranz für Breakout
+RSI_BUY_MAX = 65.0
+PCT_MOVE_MIN = 0.5
+
+STATE_FILE = "state/last.json"
 SIGNALS_FILE = "docs/signals.json"
 EXITS_FILE = "docs/exits.json"
 
-# ========= Parameter =========
-PRICE_MAX = 5.0
-RELVOL_MIN = 2.0
-AVGVOL_MIN = 500_000
-RANGE_PCT_MIN = 5.0
-BREAKOUT_TOL = 0.003  # 0.3%
+# ==== HELPER ====
+def now_utc():
+    return datetime.now(timezone.utc).isoformat()
 
-# ========= Hilfsfunktionen =========
-def log(msg):
-    print(f"[{datetime.utcnow().isoformat()}] {msg}")
+def last_n_closes(df, n=50):
+    return [round(float(x), 6) for x in df["Close"].tail(n).tolist()]
 
-def save_json(path, data):
-    with open(path, "w") as f:
-        json.dump(data, f, indent=2)
+def scan_finviz():
+    ov = Overview()
+    filters = [
+        "sh_price_u5",     # price <= 5 USD
+        "sh_relvol_o2",    # rel vol >= 2
+        "sh_avgvol_o500"   # avg vol >= 500k
+    ]
+    print(f"[{now_utc()}] [SCAN] Finviz… price<=5.0 relvol>=2.0 avgvol>=500000")
+    ov.set_filter(filters)  # FIX: ohne named arg
+    df = ov.screener_view()
+    tickers = df['Ticker'].tolist() if 'Ticker' in df.columns else []
+    print(f"[{now_utc()}] [SCAN] Finviz-Kandidaten: {len(tickers)} -> {tickers}")
+    return tickers
 
-def load_json(path):
-    if os.path.exists(path):
-        return json.load(open(path))
-    return []
-
-# ========= KI-Analyse (SL/TP/Trailing) =========
 def analyze_with_ki(signal: dict) -> dict:
     if not KI_WEBHOOK_URL:
         return {}
@@ -50,123 +58,86 @@ def analyze_with_ki(signal: dict) -> dict:
         "risk_pct": RISK_PCT,
     }
     try:
-        res = requests.post(KI_WEBHOOK_URL, json=payload, timeout=10)
-        if res.status_code == 200:
-            return res.json()
-        log(f"[KI] Fehler {res.status_code}: {res.text}")
+        r = requests.post(KI_WEBHOOK_URL, json=payload, timeout=10)
+        if r.ok:
+            return r.json()
+        else:
+            print(f"[KI] Error {r.status_code}: {r.text}")
     except Exception as e:
-        log(f"[KI] Exception: {e}")
+        print(f"[KI] Exception: {e}")
     return {}
 
-# ========= TraderPost Order =========
-def send_traderspost_order(symbol, qty, side, sl=None, tp=None, trail=None):
-    if not TP_API_KEY or not TP_STRATEGY_ID:
-        return
-    payload = {
-        "symbol": symbol,
-        "quantity": qty,
-        "side": side,
-        "type": "market",
-        "time_in_force": "gtc",
+def evaluate_ticker(df, t):
+    price = float(df["Close"].iloc[-1])
+    prev_close = float(df["Close"].iloc[-2])
+    prev_high = float(df["High"].tail(BREAKOUT_LEN).max())
+
+    pct_move = round((price - prev_close) / prev_close * 100, 2)
+    rsi = calc_rsi(df["Close"])
+    breakout = price >= prev_high * (1 - DELTA_TOL/100)
+    momentum = pct_move >= PCT_MOVE_MIN and rsi <= RSI_BUY_MAX
+
+    buy_raw = breakout and momentum
+    rec = "BUY" if buy_raw else "HOLD"
+
+    return {
+        "symbol": t,
+        "price": round(price, 4),
+        "pct_move": pct_move,
+        "rsi": round(rsi, 2),
+        "breakout": breakout,
+        "momentum": momentum,
+        "recommendation": rec,
+        "spark": last_n_closes(df, 50)
     }
-    if sl: payload["stop_loss_percent"] = sl
-    if tp: payload["take_profit_percent"] = tp
-    if trail: payload["trailing_stop_percent"] = trail
 
-    headers = {
-        "Authorization": f"Bearer {TP_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    r = requests.post(
-        f"https://api.traderspost.io/api/v2/strategies/{TP_STRATEGY_ID}/orders",
-        headers=headers,
-        json=payload
-    )
-    log(f"[TP] {symbol} -> {side.upper()} {qty} | SL={sl}% TP={tp}% Trail={trail}% | {r.status_code} {r.text}")
-
-# ========= Scanner =========
-def scan_finviz():
-    log(f"[SCAN] Finviz… price<={PRICE_MAX} relvol>={RELVOL_MIN} avgvol>={AVGVOL_MIN}")
-    ov = Overview()
-    filters = [
-        f"sh_price_u{PRICE_MAX}",
-        f"sh_relvol_o{RELVOL_MIN}",
-        f"sh_avgvol_o{AVGVOL_MIN}"
-    ]
-    ov.set_filter(filters=filters)
-    df = ov.screener_view()
-    tickers = df["Ticker"].tolist()
-    log(f"[SCAN] Finviz-Kandidaten: {len(tickers)} -> {tickers[:20]} …")
-    return tickers
-
-# ========= Evaluierung =========
-def evaluate_ticker(ticker):
-    try:
-        df = yf.download(ticker, period="1mo", interval="1d", progress=False)
-        if df.empty:
-            return None
-        price = float(df["Close"].iloc[-1])
-        prev_close = float(df["Close"].iloc[-2])
-        prev_high = float(df["High"].tail(20).max())
-        pct_move = round(((price - prev_close) / prev_close) * 100, 2)
-        rsi_now = calc_rsi(df["Close"])
-
-        breakout = price >= prev_high * (1 - BREAKOUT_TOL)
-        momentum = rsi_now >= 60
-        buy_raw = breakout and momentum and pct_move >= 0.5 and rsi_now <= 70
-
-        signal = {
-            "timestamp": datetime.utcnow().isoformat(),
-            "symbol": ticker,
-            "price": round(price, 4),
-            "pct_move": pct_move,
-            "rsi": rsi_now,
-            "breakout": breakout,
-            "momentum": momentum,
-            "recommendation": "BUY" if buy_raw else "HOLD",
-        }
-
-        if buy_raw:
-            ki = analyze_with_ki(signal)
-            if ki:
-                signal.update(ki)
-                qty = ki.get("quantity", int((ACCOUNT_EQUITY * RISK_PCT) / price))
-                send_traderspost_order(ticker, qty, "buy", ki.get("stop_loss"), ki.get("take_profit"), ki.get("trailing_stop"))
-        return signal
-    except Exception as e:
-        log(f"[ERR] {ticker} {e}")
-        return None
-
-# ========= RSI =========
 def calc_rsi(series, period=14):
     delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
-    return round(100 - (100 / (1 + rs)).iloc[-1], 2)
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
+    avg_gain = gain.rolling(window=period).mean()
+    avg_loss = loss.rolling(window=period).mean()
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi.iloc[-1]
 
-# ========= Main =========
-if __name__ == "__main__":
+def save_json(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+
+# ==== MAIN ====
+def run():
     tickers = scan_finviz()
-    final_signals = []
-    exits = load_json(EXITS_FILE)
+    signals = []
+    exits = []
 
     for t in tickers:
-        sig = evaluate_ticker(t)
-        if sig:
-            final_signals.append(sig)
+        print(f"[{t}] downloading…")
+        df = yf.download(t, period="5d", interval=TIMEFRAME, progress=False)
+        if df.empty:
+            continue
 
-            # Exit-Logik
-            if sig["recommendation"] == "SELL":
-                exits.append({
-                    "timestamp": sig["timestamp"],
-                    "symbol": sig["symbol"],
-                    "price": sig["price"],
-                    "reason": sig.get("exit_reason", "Signal SELL"),
-                })
+        signal = evaluate_ticker(df, t)
+        ki_data = analyze_with_ki(signal)
+        if ki_data:
+            signal.update(ki_data)
 
-    save_json(SIGNALS_FILE, final_signals)
+        print(f"[{t}] price={signal['price']:.4f} rsi={signal['rsi']} Δ%={signal['pct_move']} breakout={signal['breakout']} mom={signal['momentum']} -> {signal['recommendation']}")
+
+        if signal["recommendation"] == "BUY":
+            signals.append(signal)
+            if TP_WEBHOOK_URL:
+                try:
+                    requests.post(TP_WEBHOOK_URL, json=signal, timeout=10)
+                except Exception as e:
+                    print(f"[TP] Error sending: {e}")
+        elif signal["recommendation"] == "SELL":
+            exits.append(signal)
+
+    save_json(SIGNALS_FILE, signals)
     save_json(EXITS_FILE, exits)
+    print(f"[DONE] {len(signals)} BUY, {len(exits)} SELL")
 
-    log(f"[WRITE] {SIGNALS_FILE} -> {len(final_signals)} Zeilen")
-    log(f"[WRITE] {EXITS_FILE} -> {len(exits)} Zeilen")
+if __name__ == "__main__":
+    run()
