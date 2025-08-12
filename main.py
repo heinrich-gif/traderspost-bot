@@ -37,7 +37,7 @@ def scan_finviz():
         "sh_avgvol_o500"   # avg vol >= 500k
     ]
     print(f"[{now_utc()}] [SCAN] Finviz… price<=5.0 relvol>=2.0 avgvol>=500000")
-    ov.set_filter(filters)  # FIX: ohne named arg
+    ov.set_filter(filter_list=filters)  # FIX: ohne named arg
     df = ov.screener_view()
     tickers = df['Ticker'].tolist() if 'Ticker' in df.columns else []
     print(f"[{now_utc()}] [SCAN] Finviz-Kandidaten: {len(tickers)} -> {tickers}")
