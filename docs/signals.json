@@ -1,5 +1,5 @@
 {
-  "generated_at": "2025-08-12T13:37:10.455367+00:00",
+  "generated_at": "2025-08-12T13:39:06.859217+00:00",
   "timeframe": "1m",
   "breakout_len": 20,
   "min_pct_move": 5.0,
@@ -11,9 +11,9 @@
   "signals": [
     {
       "symbol": "SGBX",
-      "price": 0.3202,
-      "rsi": 45.28,
-      "pct_move": 0.69,
+      "price": 0.3156,
+      "rsi": 40.06,
+      "pct_move": 0.22,
       "prev_high_n": 20,
       "prev_high_value": 0.335,
       "near_breakout_pct": 0.3,
@@ -23,10 +23,8 @@
       "qty": 0,
       "ki_score": null,
       "ki_pass": true,
-      "timestamp": "2025-08-12T13:37:10.304652+00:00",
+      "timestamp": "2025-08-12T13:39:06.708628+00:00",
       "spark": [
-        0.3182,
-        0.3184,
         0.3183,
         0.315,
         0.3189,
@@ -74,7 +72,9 @@
         0.322,
         0.3201,
         0.318,
-        0.3202
+        0.3198,
+        0.3149,
+        0.3156
       ],
       "sl_percent": null,
       "tp_percent": null,
