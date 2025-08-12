@@ -30,7 +30,7 @@ TP_WEBHOOK_URL = os.getenv("TP_WEBHOOK_URL", "").strip()
 DEFAULT_QTY    = int(os.getenv("POSITION_QTY", "10"))
 
 TICKERS_FILE  = Path("tickers.txt")
-STATE_FILE    = Path("state/signals.json")
+STATE_FILE    = Path("docs/signals.json")
 
 # ===================== Utils / Logging =====================
 def now_utc_iso() -> str:
