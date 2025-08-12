@@ -1,0 +1,51 @@
+export default {
+  async fetch(request, env) {
+    // === Zeit-Check: US Extended Hours ===
+    const now = new Date();
+    const utcHour = now.getUTCHours();
+    const utcMin = now.getUTCMinutes();
+    const weekday = now.getUTCDay(); // 0=So, 6=Sa
+
+    // Handelsfenster UTC:
+    // Pre-Market: 08:00–13:30
+    // Regular:    13:30–20:00
+    // After-Hours:20:00–00:00
+    // + Nachtverlängerung: 00:00–02:00
+    const mins = utcHour * 60 + utcMin;
+    const inSession =
+      (weekday >= 1 && weekday <= 5) &&
+      ((mins >= 8 * 60 && mins < 24 * 60) || (mins >= 0 && mins < 2 * 60));
+
+    if (!inSession) {
+      return new Response(`⏸ Outside US extended session (UTC ${utcHour}:${utcMin})`, { status: 200 });
+    }
+
+    // === Nur GET/HEAD zulassen (UptimeRobot Free) ===
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      return new Response("Method not allowed", { status: 405 });
+    }
+
+    // === GitHub Workflow Trigger ===
+    const ghApiUrl = `https://api.github.com/repos/heinrich-gif/traderspost-bot/actions/workflows/scan.yml/dispatches`;
+
+    const ghResp = await fetch(ghApiUrl, {
+      method: "POST",
+      headers: {
+        "Accept": "application/vnd.github.v3+json",
+        "Authorization": `token ${env.GH_TOKEN}`,
+        "User-Agent": "heinrich-gif-bot" // Muss vorhanden sein, sonst 403!
+      },
+      body: JSON.stringify({ ref: "main" })
+    });
+
+    if (!ghResp.ok) {
+      const txt = await ghResp.text();
+      return new Response(
+        `GitHub API Error: ${ghResp.status} - ${txt}`,
+        { status: ghResp.status }
+      );
+    }
+
+    return new Response("✅ GitHub workflow triggered!", { status: 200 });
+  }
+};
