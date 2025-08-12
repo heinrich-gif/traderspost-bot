@@ -1,218 +1,69 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="de">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Penny Breakout Signals</title>
-  <style>
-    :root { --bg:#0b0f14; --card:#121923; --text:#eaf2ff; --muted:#9fb0c8; --buy:#25d366; --hold:#ffaa33; --bad:#ff5577; --ok:#26c281; --warn:#ffb648; }
-    *{box-sizing:border-box} body{margin:0;font-family:ui-sans-serif,system-ui,Segoe UI,Roboto;background:var(--bg);color:var(--text)}
-    header{padding:18px 20px;border-bottom:1px solid #1c2735;background:#0e141b;position:sticky;top:0;z-index:10}
-    h1{margin:0;font-size:18px;font-weight:700}
-    .meta{color:var(--muted);font-size:12px;margin-top:4px}
-    main{max-width:1200px;margin:20px auto;padding:0 14px}
-    .controls{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px}
-    .sel, .btn{background:#0f1620;color:var(--text);border:1px solid #1c2735;border-radius:12px;padding:8px 10px;font-size:14px}
-    .btn{cursor:pointer}
-    .card{background:var(--card);border:1px solid #1c2735;border-radius:14px;padding:14px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
-    table{width:100%;border-collapse:separate;border-spacing:0 8px}
-    th,td{padding:10px 12px;text-align:left;vertical-align:middle}
-    th{color:#b7c7df;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em}
-    tr{background:#0f1620;border-radius:10px}
-    tr td:first-child{border-top-left-radius:10px;border-bottom-left-radius:10px}
-    tr td:last-child{border-top-right-radius:10px;border-bottom-right-radius:10px}
-    .pill{display:inline-block;padding:4px 10px;border-radius:999px;font-weight:700;font-size:12px}
-    .buy{background:rgba(37,211,102,.12);color:#27e38a;border:1px solid rgba(39,227,138,.35)}
-    .hold{background:rgba(255,170,51,.12);color:#ffc266;border:1px solid rgba(255,194,102,.35)}
-    .muted{color:var(--muted)}
-    .mono{font-variant-numeric:tabular-nums;font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace}
-    .badge{display:inline-block;padding:3px 8px;border-radius:999px;font-weight:700;font-size:11px;border:1px solid transparent}
-    .badge.ok{color:#d7ffe5;background:rgba(38,194,129,.12);border-color:rgba(38,194,129,.35)}
-    .badge.bad{color:#ffd6de;background:rgba(255,85,119,.12);border-color:rgba(255,85,119,.35)}
-    .spark{width:120px;height:28px}
-    .footer{color:var(--muted);font-size:12px;margin-top:8px}
-    .hr{height:1px;background:#1c2735;margin:12px 0}
-    .hint{font-size:12px;color:#8aa0bd}
-  </style>
+<meta charset="UTF-8">
+<title>Trading Dashboard</title>
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <header>
-    <h1>Penny Breakout Signals</h1>
-    <div class="meta">
-      <span id="gen"></span> • TF: <span id="tf"></span> • Regeln: High<span id="n"></span> / Δ%≥<span id="mp"></span> / RSI≥<span id="mr"></span>
-      • KI-Min: <span id="km"></span> • Scorer: <span id="ks"></span>
-    </div>
-  </header>
+<h1>📊 Trading Dashboard</h1>
 
-  <main>
-    <div class="card">
-      <div class="controls">
-        <select id="filter" class="sel">
-          <option value="all">Alle Signale</option>
-          <option value="buy">Nur BUY</option>
-        </select>
-        <select id="sort" class="sel">
-          <option value="-pct">Sortieren: Δ% absteigend</option>
-          <option value="pct">Sortieren: Δ% aufsteigend</option>
-          <option value="-rsi">RSI absteigend</option>
-          <option value="rsi">RSI aufsteigend</option>
-          <option value="-price">Preis absteigend</option>
-          <option value="price">Preis aufsteigend</option>
-        </select>
-        <button id="refresh" class="btn">Jetzt aktualisieren</button>
-        <span class="hint">Auto-Refresh alle 15s</span>
-      </div>
+<h2>Aktuelle Signale</h2>
+<table id="signals">
+<thead>
+<tr>
+<th>Symbol</th><th>Preis</th><th>% Δ</th><th>RSI</th><th>Breakout</th><th>Momentum</th><th>Empfehlung</th><th>SL</th><th>TP</th><th>Trail</th>
+</tr>
+</thead>
+<tbody></tbody>
+</table>
 
-      <div class="hr"></div>
+<h2>Exits</h2>
+<table id="exits">
+<thead>
+<tr>
+<th>Datum</th><th>Symbol</th><th>Preis</th><th>Grund</th>
+</tr>
+</thead>
+<tbody></tbody>
+</table>
 
-      <table id="tbl">
-        <thead>
-          <tr>
-            <th>Zeit (UTC)</th>
-            <th>Ticker</th>
-            <th>Empfehlung</th>
-            <th>Preis</th>
-            <th>Δ%</th>
-            <th>RSI</th>
-            <th>TP (%, $)</th>
-            <th>SL (%, $)</th>
-            <th>Trailing %</th>
-            <th>KI</th>
-            <th>Chart</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
+<script>
+async function loadData() {
+    const sigRes = await fetch('signals.json');
+    const signals = await sigRes.json();
+    const exRes = await fetch('exits.json');
+    const exits = await exRes.json();
 
-      <div class="footer">Quelle: GitHub Actions Bot • TradersPost/IBKR via Webhook</div>
-    </div>
-  </main>
+    const sigBody = document.querySelector('#signals tbody');
+    sigBody.innerHTML = '';
+    signals.forEach(s => {
+        sigBody.innerHTML += `<tr>
+            <td>${s.symbol}</td>
+            <td>$${s.price.toFixed(2)}</td>
+            <td>${s.pct_move}%</td>
+            <td>${s.rsi}</td>
+            <td>${s.breakout}</td>
+            <td>${s.momentum}</td>
+            <td>${s.recommendation}</td>
+            <td>${s.stop_loss || ''}</td>
+            <td>${s.take_profit || ''}</td>
+            <td>${s.trailing_stop || ''}</td>
+        </tr>`;
+    });
 
-  <script>
-    let DATA = null;
-
-    async function load() {
-      const res = await fetch('signals.json?ts=' + Date.now(), { cache: 'no-store' });
-      if (!res.ok) return;
-      DATA = await res.json();
-      renderMeta(DATA);
-      renderTable(DATA);
-    }
-
-    function renderMeta(d) {
-      const ts = new Date(d.generated_at).toISOString().replace('T',' ').replace('Z','Z');
-      document.getElementById('gen').textContent = ts;
-      document.getElementById('tf').textContent  = d.timeframe;
-      document.getElementById('n').textContent   = d.breakout_len;
-      document.getElementById('mp').textContent  = d.min_pct_move;
-      document.getElementById('mr').textContent  = d.min_rsi_mom;
-      document.getElementById('km').textContent  = d.ki?.min_score ?? '–';
-      document.getElementById('ks').textContent  = d.ki?.scorer_url_set ? 'ON' : 'OFF';
-    }
-
-    function sortBy(arr, key, asc=true) {
-      return arr.slice().sort((a,b) => {
-        const va = a[key] ?? 0, vb = b[key] ?? 0;
-        return asc ? (va - vb) : (vb - va);
-      });
-    }
-
-    function applyFilterSort(items) {
-      const f = document.getElementById('filter').value;
-      const s = document.getElementById('sort').value;
-
-      let out = items.slice();
-
-      if (f === 'buy') out = out.filter(x => x.recommendation === 'BUY');
-
-      const map = {
-        'pct':  {k:'pct_move', asc:true},  '-pct':  {k:'pct_move', asc:false},
-        'rsi':  {k:'rsi', asc:true},       '-rsi':  {k:'rsi', asc:false},
-        'price':{k:'price', asc:true},     '-price':{k:'price', asc:false}
-      };
-      const cfg = map[s] || map['-pct'];
-      out = sortBy(out, cfg.k, cfg.asc);
-      return out;
-    }
-
-    function sparkline(canvas, points) {
-      if (!canvas || !points || points.length < 2) return;
-      const ctx = canvas.getContext('2d');
-      const w = canvas.width, h = canvas.height;
-      ctx.clearRect(0,0,w,h);
-
-      const min = Math.min(...points), max = Math.max(...points);
-      const pad = 2;
-      const scaleX = (w - pad*2) / (points.length - 1 || 1);
-      const scaleY = (h - pad*2) / ((max - min) || 1);
-
-      ctx.beginPath();
-      for (let i=0;i<points.length;i++){
-        const x = pad + i*scaleX;
-        const y = h - pad - (points[i]-min)*scaleY;
-        if (i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
-      }
-      ctx.lineWidth = 1.5;
-      ctx.strokeStyle = '#7cc8ff';
-      ctx.stroke();
-    }
-
-    function kiBadge(score, pass, minScore) {
-      if (score == null) return '';
-      const cls = pass ? 'ok' : 'bad';
-      const title = `KI Score ${score} (min ${minScore})`;
-      return `<span class="badge ${cls}" title="${title}">KI ${score}</span>`;
-    }
-
-    function fmt(n, d=2){ return (n==null || isNaN(n)) ? '–' : Number(n).toFixed(d); }
-
-    function renderTable(d) {
-      const tbody = document.querySelector('#tbl tbody');
-      tbody.innerHTML = '';
-      const items = applyFilterSort(d.signals || []);
-      const minScore = d.ki?.min_score ?? 60;
-
-      items.forEach(s => {
-        const tr = document.createElement('tr');
-        const pill = s.recommendation === 'BUY' ? '<span class="pill buy">BUY</span>' : '<span class="pill hold">HOLD</span>';
-
-        const tdTime = `<td class="mono muted">${(s.timestamp||'').replace('T',' ').replace('Z','Z')}</td>`;
-        const tdSym  = `<td class="mono"><strong>${s.symbol}</strong></td>`;
-        const tdRec  = `<td>${pill}</td>`;
-        const tdP    = `<td class="mono">$ ${fmt(s.price, 4)}</td>`;
-        const tdD    = `<td class="mono ${s.pct_move>=0?'':'muted'}">${fmt(s.pct_move,2)}%</td>`;
-        const tdR    = `<td class="mono">${fmt(s.rsi,2)}</td>`;
-
-        const tpPct = s.tp_percent!=null ? fmt(s.tp_percent,0)+'%' : '–';
-        const tpDol = s.tp_price!=null ? '$ '+fmt(s.tp_price,4) : '–';
-        const tdTP  = `<td class="mono">${tpPct} / ${tpDol}</td>`;
-
-        const slPct = s.sl_percent!=null ? fmt(s.sl_percent,0)+'%' : '–';
-        const slDol = s.sl_price!=null ? '$ '+fmt(s.sl_price,4) : '–';
-        const tdSL  = `<td class="mono">${slPct} / ${slDol}</td>`;
-
-        const tdTr  = `<td class="mono">${s.trailing_percent!=null ? fmt(s.trailing_percent,0)+'%' : '–'}</td>`;
-
-        const tdKI  = `<td>${kiBadge(s.ki_score, s.ki_pass, minScore)}</td>`;
-
-        const sparkId = `sp_${s.symbol}_${Math.random().toString(36).slice(2,7)}`;
-        const tdSp   = `<td><canvas id="${sparkId}" class="spark" width="120" height="28"></canvas></td>`;
-
-        tr.innerHTML = tdTime+tdSym+tdRec+tdP+tdD+tdR+tdTP+tdSL+tdTr+tdKI+tdSp;
-        tbody.appendChild(tr);
-
-        // Sparkline zeichnen
-        const canvas = document.getElementById(sparkId);
-        sparkline(canvas, s.spark || []);
-      });
-    }
-
-    document.getElementById('filter').addEventListener('change', () => renderTable(DATA||{signals:[]}));
-    document.getElementById('sort').addEventListener('change', () => renderTable(DATA||{signals:[]}));
-    document.getElementById('refresh').addEventListener('click', load);
-
-    load();
-    setInterval(load, 15000);
-  </script>
+    const exitBody = document.querySelector('#exits tbody');
+    exitBody.innerHTML = '';
+    exits.forEach(e => {
+        exitBody.innerHTML += `<tr>
+            <td>${e.timestamp}</td>
+            <td>${e.symbol}</td>
+            <td>$${e.price.toFixed(2)}</td>
+            <td>${e.reason}</td>
+        </tr>`;
+    });
+}
+loadData();
+</script>
 </body>
 </html>
