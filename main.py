@@ -236,31 +236,30 @@ def run():
 
             # BUY
             if buy and cooldown_ok(state, t, "buy", now_utc):
-                # Optional lokale KI-Prüfung (bei KI_MODE != webhook)
                 if ki_pass(t, "buy", price):
                     ok = True
                     if KI_MODE == "webhook":
                         ok = send_to_cloudflare(t, "buy", POSITION_QTY, price)
-                    elif KI_MODE == "none":
-                        ok = send_traderspost_direct(t, "buy", POSITION_QTY)
-                    elif KI_MODE == "openai":
+                    elif KI_MODE in ("none", "openai"):
                         ok = send_traderspost_direct(t, "buy", POSITION_QTY)
                     if ok:
                         mark_sent(state, t, "buy", now_utc)
                         print(f"[OK] BUY {t} @ {price:.2f}")
 
-            # SELL (optional; bei nur-Long-Strategie auskommentieren)
+            # SELL
             if sell and cooldown_ok(state, t, "sell", now_utc):
                 if ki_pass(t, "sell", price):
                     ok = True
                     if KI_MODE == "webhook":
                         ok = send_to_cloudflare(t, "sell", POSITION_QTY, price)
-                    elif KI_MODE == "none":
-                        ok = send_traderspost_direct(t, "sell", POSITION_QTY)
-                    elif KI_MODE == "openai":
+                    elif KI_MODE in ("none", "openai"):
                         ok = send_traderspost_direct(t, "sell", POSITION_QTY)
                     if ok:
                         mark_sent(state, t, "sell", now_utc)
                         print(f"[OK] SELL {t} @ {price:.2f}")
 
-            time.sleep(0.15)  # sanfte
+        except Exception as e:
+            print(f"[WARN] {t}: {e}")
+
+        time.sleep(0.15)  # sanfte Drossel außerhalb von try/except!
+
