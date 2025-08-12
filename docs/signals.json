@@ -1,18 +1,17 @@
 [
   {
-    "timestamp": "2025-08-12T21:01:31.561090+00:00",
+    "timestamp": "2025-08-12T21:04:12.634622+00:00",
     "symbol": "DDD",
-    "price": 2.32,
-    "pct_move": 0.83,
-    "rsi": 59.9,
+    "price": 2.3199,
+    "pct_move": -0.0,
+    "rsi": 59.64,
     "breakout": false,
-    "momentum": true,
+    "momentum": false,
     "prev_high_n": 20,
     "prev_high_value": 2.33,
     "near_breakout_pct": 0.3,
     "recommendation": "HOLD",
     "spark": [
-      2.265,
       2.275,
       2.29,
       2.2701,
@@ -61,11 +60,12 @@
       2.3,
       2.3,
       2.3009,
-      2.32
+      2.32,
+      2.3199
     ]
   },
   {
-    "timestamp": "2025-08-12T21:01:31.889982+00:00",
+    "timestamp": "2025-08-12T21:04:12.898066+00:00",
     "symbol": "ZIP",
     "price": 3.8589,
     "pct_move": 0.0,
@@ -77,6 +77,7 @@
     "near_breakout_pct": 0.3,
     "recommendation": "HOLD",
     "spark": [
+      3.77,
       3.765,
       3.77,
       3.765,
@@ -109,7 +110,6 @@
       3.785,
       3.785,
       3.785,
-      3.785,
       3.805,
       3.84,
       3.84,
@@ -130,20 +130,18 @@
     ]
   },
   {
-    "timestamp": "2025-08-12T21:01:33.197030+00:00",
+    "timestamp": "2025-08-12T21:04:13.248336+00:00",
     "symbol": "MSOS",
-    "price": 4.68,
-    "pct_move": -0.21,
-    "rsi": 53.91,
+    "price": 4.6607,
+    "pct_move": -1.03,
+    "rsi": 50.16,
     "breakout": false,
     "momentum": false,
     "prev_high_n": 20,
-    "prev_high_value": 4.7,
+    "prev_high_value": 4.709,
     "near_breakout_pct": 0.3,
     "recommendation": "HOLD",
     "spark": [
-      4.64,
-      4.68,
       4.7,
       4.6901,
       4.6999,
@@ -180,7 +178,7 @@
       4.6699,
       4.66,
       4.66,
-      4.65,
+      4.67,
       4.65,
       4.68,
       4.6699,
@@ -191,15 +189,17 @@
       4.69,
       4.69,
       4.69,
-      4.68
+      4.68,
+      4.709,
+      4.6607
     ]
   },
   {
-    "timestamp": "2025-08-12T21:01:33.539309+00:00",
+    "timestamp": "2025-08-12T21:04:13.513645+00:00",
     "symbol": "AGL",
     "price": 0.8821,
     "pct_move": 0.0,
-    "rsi": 51.67,
+    "rsi": 33.47,
     "breakout": false,
     "momentum": true,
     "prev_high_n": 20,
@@ -207,7 +207,6 @@
     "near_breakout_pct": 0.3,
     "recommendation": "HOLD",
     "spark": [
-      0.89475,
       0.8956,
       0.8961,
       0.896,
@@ -256,23 +255,23 @@
       0.8821,
       0.8821,
       0.8821,
+      0.8821,
       0.8821
     ]
   },
   {
-    "timestamp": "2025-08-12T21:01:33.799329+00:00",
+    "timestamp": "2025-08-12T21:04:13.758361+00:00",
     "symbol": "MX",
-    "price": 3.038,
-    "pct_move": 0.26,
-    "rsi": 48.53,
-    "breakout": false,
-    "momentum": true,
+    "price": 3.0498,
+    "pct_move": -0.0,
+    "rsi": 77.74,
+    "breakout": true,
+    "momentum": false,
     "prev_high_n": 20,
     "prev_high_value": 3.05,
     "near_breakout_pct": 0.3,
     "recommendation": "HOLD",
     "spark": [
-      2.925,
       2.925,
       2.9299,
       2.925,
@@ -286,7 +285,6 @@
       2.98,
       2.9794,
       2.975,
-      2.98,
       2.98,
       2.98,
       2.98,
@@ -321,15 +319,17 @@
       2.98,
       3.0,
       3.03,
-      3.038
+      3.038,
+      3.0499,
+      3.0498
     ]
   },
   {
-    "timestamp": "2025-08-12T21:01:35.142094+00:00",
+    "timestamp": "2025-08-12T21:04:14.092691+00:00",
     "symbol": "ETHD",
     "price": 3.62,
-    "pct_move": 0.28,
-    "rsi": 37.52,
+    "pct_move": 0.0,
+    "rsi": 44.43,
     "breakout": false,
     "momentum": true,
     "prev_high_n": 20,
@@ -337,9 +337,6 @@
     "near_breakout_pct": 0.3,
     "recommendation": "HOLD",
     "spark": [
-      3.76,
-      3.76,
-      3.76,
       3.755,
       3.71,
       3.67,
@@ -371,8 +368,8 @@
       3.66,
       3.6598,
       3.66,
-      3.65,
-      3.6599,
+      3.655,
+      3.66,
       3.64,
       3.64,
       3.64,
@@ -386,15 +383,18 @@
       3.6,
       3.6,
       3.61,
+      3.6297,
+      3.61,
+      3.62,
       3.62
     ]
   },
   {
-    "timestamp": "2025-08-12T21:01:35.501418+00:00",
+    "timestamp": "2025-08-12T21:04:14.433807+00:00",
     "symbol": "AMC",
-    "price": 3.09,
+    "price": 3.08,
     "pct_move": 0.0,
-    "rsi": 60.04,
+    "rsi": 33.33,
     "breakout": false,
     "momentum": true,
     "prev_high_n": 20,
@@ -402,9 +402,6 @@
     "near_breakout_pct": 0.3,
     "recommendation": "HOLD",
     "spark": [
-      3.07,
-      3.07,
-      3.07,
       3.07,
       3.07,
       3.06,
@@ -451,11 +448,14 @@
       3.085,
       3.08,
       3.0899,
-      3.09
+      3.09,
+      3.08,
+      3.08,
+      3.08
     ]
   },
   {
-    "timestamp": "2025-08-12T21:01:35.814190+00:00",
+    "timestamp": "2025-08-12T21:04:14.709214+00:00",
     "symbol": "LAR",
     "price": 3.5,
     "pct_move": 0.0,
@@ -467,7 +467,6 @@
     "near_breakout_pct": 0.3,
     "recommendation": "HOLD",
     "spark": [
-      3.575,
       3.575,
       3.6,
       3.605,
@@ -515,26 +514,24 @@
       3.55,
       3.55,
       3.636232,
+      3.62,
       3.5,
       3.5
     ]
   },
   {
-    "timestamp": "2025-08-12T21:01:36.146877+00:00",
+    "timestamp": "2025-08-12T21:04:14.982914+00:00",
     "symbol": "NIO",
     "price": 4.5,
     "pct_move": 0.0,
-    "rsi": 65.82,
+    "rsi": 90.32,
     "breakout": true,
     "momentum": true,
     "prev_high_n": 20,
     "prev_high_value": 4.5,
     "near_breakout_pct": 0.3,
-    "recommendation": "BUY",
+    "recommendation": "HOLD",
     "spark": [
-      4.4801,
-      4.4897,
-      4.4899,
       4.49,
       4.49,
       4.5,
@@ -581,20 +578,17 @@
       4.5,
       4.4997,
       4.4999,
+      4.5,
+      4.5,
+      4.4998,
       4.5
-    ],
-    "sl_percent": 5.0,
-    "tp_percent": 12.5,
-    "trailing_percent": 3.3,
-    "qty_sized": 22,
-    "sl_price": 4.275,
-    "tp_price": 5.0625
+    ]
   },
   {
-    "timestamp": "2025-08-12T21:01:45.753380+00:00",
+    "timestamp": "2025-08-12T21:04:15.254252+00:00",
     "symbol": "HLLY",
     "price": 3.39,
-    "pct_move": 0.05,
+    "pct_move": 0.0,
     "rsi": 52.02,
     "breakout": false,
     "momentum": true,
@@ -603,7 +597,6 @@
     "near_breakout_pct": 0.3,
     "recommendation": "HOLD",
     "spark": [
-      3.385,
       3.385,
       3.385,
       3.385,
@@ -652,6 +645,7 @@
       3.39,
       3.3355,
       3.3883,
+      3.39,
       3.39
     ]
   }
