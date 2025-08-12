@@ -10,17 +10,17 @@ import requests
 
 # ========= Konfiguration (ENV) =========
 TIMEFRAME          = os.getenv("TIMEFRAME", "5m")
-POSITION_QTY       = int(os.getenv("POSITION_QTY", "10"))          # Fallback, falls KI keine qty liefert
+POSITION_QTY       = int(os.getenv("POSITION_QTY", "10"))
 
 # Setup-Regeln
 BREAKOUT_LEN       = int(os.getenv("BREAKOUT_LEN", "20"))
-NEAR_BREAKOUT_PCT  = float(os.getenv("NEAR_BREAKOUT_PCT", "0.3"))  # Toleranz in %, z.B. 0.3
+NEAR_BREAKOUT_PCT  = float(os.getenv("NEAR_BREAKOUT_PCT", "0.3"))  # % Toleranz fürs Near-Breakout
 
 # Aggressive BUY-Schwellen
-BUY_RSI_MAX        = float(os.getenv("BUY_RSI_MAX", "65"))         # BUY zulassen bis zu diesem RSI
-BUY_DELTA_MIN      = float(os.getenv("BUY_DELTA_MIN", "0.5"))      # Mindest-Δ% für BUY (z.B. 0.5%)
+BUY_RSI_MAX        = float(os.getenv("BUY_RSI_MAX", "65"))
+BUY_DELTA_MIN      = float(os.getenv("BUY_DELTA_MIN", "0.5"))
 
-# (Nur Info/Badge – nicht mehr kaufentscheidend)
+# Info/Badge (keine Kaufentscheidung)
 MIN_PCT_MOVE       = float(os.getenv("MIN_PCT_MOVE", "5.0"))
 MIN_RSI_MOM        = float(os.getenv("MIN_RSI_MOM", "50.0"))
 
@@ -35,6 +35,12 @@ RISK_PCT           = float(os.getenv("RISK_PCT", "1"))
 
 # TradersPost (optional)
 TP_WEBHOOK_URL     = os.getenv("TP_WEBHOOK_URL", "").strip()
+
+# Bot-Exit-Engine (Backup-TP/SL/Trailing)
+BOT_MANAGE_EXITS   = os.getenv("BOT_MANAGE_EXITS", "1") == "1"   # 1=an, 0=aus
+EXIT_CHECK_LOOKBACK= int(os.getenv("EXIT_CHECK_LOOKBACK", "3"))  # wie viele Kerzen zur Prüfung
+STATE_DIR          = Path("state")
+STATE_FILE         = STATE_DIR / "positions.json"
 
 # Dateien
 OUTPUT_PATH        = Path(os.getenv("OUTPUT_PATH", "docs/signals.json"))
@@ -53,7 +59,7 @@ def is_us_extended_utc(dt: datetime) -> bool:
       After 20:00–24:00 UTC + 00:00–02:00 UTC
     => Effektiv: 08:00–23:59 + 00:00–01:59 UTC
     """
-    wd = dt.weekday()  # 0=Mo … 6=So
+    wd = dt.weekday()
     if wd >= 5:
         return False
     mins = dt.hour * 60 + dt.minute
@@ -62,7 +68,6 @@ def is_us_extended_utc(dt: datetime) -> bool:
 
 # ========= Pandas/YF Hilfen =========
 def to_1d_series(obj) -> pd.Series:
-    """ Erzwingt 1D Serie aus Series oder 1-spaltigem DataFrame. """
     s = obj
     if isinstance(s, pd.DataFrame):
         s = s.iloc[:, 0]
@@ -90,8 +95,7 @@ def rsi(series: pd.Series, length: int = 14) -> pd.Series:
 def download_df(ticker: str, period="60d", interval="5m") -> pd.DataFrame:
     """
     Stabiler Download; auto_adjust=True gegen Splits/Dividenden.
-    prepost=True: Extended Hours (Pre/After) einbeziehen.
-    Passt period automatisch für 1m an.
+    prepost=True: Extended Hours.
     """
     if interval == "1m":
         period = "7d"
@@ -101,14 +105,14 @@ def download_df(ticker: str, period="60d", interval="5m") -> pd.DataFrame:
         interval=interval,
         progress=False,
         auto_adjust=True,
-        prepost=True,              # Extended Hours laden
+        prepost=True,
         group_by="column",
         threads=False,
     )
     return df
 
 
-# ========= KI-Scoring (Badge / BUY-Filter) =========
+# ========= KI-Scoring =========
 def score_with_ki(symbol: str, price: float, rsi_now: float, pct_move: float, breakout: bool, momentum: bool):
     ki_score, ki_pass = None, True
     if not KI_SCORER_URL:
@@ -169,7 +173,24 @@ def analyze_with_ki(signal: dict) -> dict:
         return {}
 
 
-# ========= Strategie =========
+# ========= Exit-State (persistente Positionsverwaltung) =========
+def load_positions() -> dict:
+    try:
+        if STATE_FILE.exists():
+            return json.loads(STATE_FILE.read_text())
+    except Exception as e:
+        print(f"[STATE] load failed: {e}")
+    return {"positions": {}}  # { symbol: {qty, entry, sl, tp, trail_pct, hi_water} }
+
+def save_positions(state: dict):
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        STATE_FILE.write_text(json.dumps(state, indent=2))
+    except Exception as e:
+        print(f"[STATE] save failed: {e}")
+
+
+# ========= Strategie (Entry) =========
 def evaluate_ticker(df: pd.DataFrame, ticker: str) -> dict:
     # ---- Stale Check ----
     try:
@@ -206,16 +227,12 @@ def evaluate_ticker(df: pd.DataFrame, ticker: str) -> dict:
     rsi_now = float(rsi(c).iloc[-1])
     momentum = rsi_now >= MIN_RSI_MOM  # Info/Badge
 
-    # >>> AGGRESSIVE BUY-LOGIK (mit Debug) <<<
+    # Aggressive BUY-Logik
     cond_rsi_delta = (rsi_now <= BUY_RSI_MAX) and (pct_move >= BUY_DELTA_MIN)
     cond_near_bo   = near_breakout
-
     buy_raw = cond_rsi_delta or cond_near_bo
-    buy_reasons = []
-    if cond_rsi_delta: buy_reasons.append(f"RSI<= {BUY_RSI_MAX} & Δ%>= {BUY_DELTA_MIN}")
-    if cond_near_bo:   buy_reasons.append(f"NearBreakout({NEAR_BREAKOUT_PCT}%)")
 
-    # KI: Wenn kein Scorer gesetzt oder keine Zahl kommt -> NICHT blockieren
+    # KI-Score (Badge immer; BUY blockt nur wenn Score < MIN)
     ki_score, _ = score_with_ki(ticker, price, rsi_now, pct_move, near_breakout, momentum)
     ki_ok = (KI_SCORER_URL == "") or (ki_score is None) or (ki_score >= KI_SCORE_MIN)
 
@@ -225,8 +242,7 @@ def evaluate_ticker(df: pd.DataFrame, ticker: str) -> dict:
         f"[{ticker}] price={price:.4f} rsi={rsi_now:.2f} Δ%={pct_move:.2f} "
         f"prevHigh{window}={prev_high:.4f} tol={NEAR_BREAKOUT_PCT:.3f}% "
         f"nearBO={near_breakout} | cond_rsi_delta={cond_rsi_delta} cond_near_bo={cond_near_bo} "
-        f"raw={buy_raw} reasons={'+'.join(buy_reasons) or '—'} "
-        f"ki={ki_score} ki_ok={ki_ok} -> {recommendation}"
+        f"raw={buy_raw} ki={ki_score} ki_ok={ki_ok} -> {recommendation}"
     )
 
     rec = {
@@ -245,7 +261,7 @@ def evaluate_ticker(df: pd.DataFrame, ticker: str) -> dict:
         "ki_pass": (ki_score is None) or (ki_score >= KI_SCORE_MIN),
         "timestamp": now_utc_iso(),
         "spark": last_n_closes(df, 50),
-        # Platzhalter für KI-Analyse
+        # Platzhalter für KI-Analyse (werden bei BUY gefüllt)
         "sl_percent": None,
         "tp_percent": None,
         "trailing_percent": None,
@@ -256,26 +272,24 @@ def evaluate_ticker(df: pd.DataFrame, ticker: str) -> dict:
     return rec
 
 
-# ========= TradersPost Versand (gefixt: 'ticker') =========
-def send_to_traderspost(sig: dict):
-    if not TP_WEBHOOK_URL or sig["recommendation"] != "BUY":
+# ========= TradersPost Versand =========
+def tp_send_buy(sig: dict):
+    if not TP_WEBHOOK_URL:
         return
-
     qty = int(sig.get("qty_sized") or sig.get("qty") or POSITION_QTY)
-
     payload = {
-        "ticker": sig["symbol"],            # WICHTIG: 'ticker', nicht 'symbol'
+        "ticker": sig["symbol"],
         "action": "buy",
         "quantity": qty,
         "order_type": "market",
         "time_in_force": "day",
-        # optionale Risk-Parameter (falls euer TP-Webhook sie versteht)
+        # prefer percent; TP ignoriert unbekannte Felder
         "take_profit_percent": sig.get("tp_percent"),
         "stop_loss_percent": sig.get("sl_percent"),
         "trailing_stop_percent": sig.get("trailing_percent"),
-        # Preise alternativ:
-        # "take_profit_price": sig.get("tp_price"),
-        # "stop_loss_price": sig.get("sl_price"),
+        # alternativ: fixe Preise
+        "take_profit_price": sig.get("tp_price"),
+        "stop_loss_price": sig.get("sl_price"),
         "meta": {
             "source": "gh-actions-bot",
             "ki_score": sig.get("ki_score"),
@@ -284,10 +298,90 @@ def send_to_traderspost(sig: dict):
     }
     try:
         r = requests.post(TP_WEBHOOK_URL, json=payload, timeout=12)
-        body = r.text.strip()
-        print(f"[TP] req={payload} -> {r.status_code} {body[:300]}")
+        print(f"[TP BUY] {sig['symbol']} -> {r.status_code} {r.text[:260]}")
     except Exception as e:
-        print(f"[TP] send failed: {e}")
+        print(f"[TP BUY] send failed: {e}")
+
+def tp_send_sell(symbol: str, qty: int | None = None):
+    if not TP_WEBHOOK_URL:
+        return
+    payload = {
+        "ticker": symbol,
+        "action": "sell",       # falls TP 'close' verlangt, einfach hier anpassen
+        "order_type": "market",
+        "time_in_force": "day",
+    }
+    if qty and qty > 0:
+        payload["quantity"] = int(qty)
+    try:
+        r = requests.post(TP_WEBHOOK_URL, json=payload, timeout=12)
+        print(f"[TP SELL] {symbol} -> {r.status_code} {r.text[:260]}")
+    except Exception as e:
+        print(f"[TP SELL] send failed: {e}")
+
+
+# ========= Exit-Engine (Backup-TP/SL/Trailing) =========
+def update_and_check_exits(state: dict, df_map: dict):
+    """
+    state: { positions: { symbol: {qty, entry, sl, tp, trail_pct, hi_water} } }
+    df_map: { symbol: df } – aktuelle Daten je Symbol
+    Prüft für jedes gehaltene Symbol:
+      - trailing: hi_water = max(hi_water, last_price)
+                  trail_stop = hi_water * (1 - trail_pct/100)
+      - exit, wenn last_price >= tp  -> SELL
+              oder last_price <= min(sl, trail_stop)
+    """
+    if not BOT_MANAGE_EXITS:
+        return
+
+    positions = state.get("positions", {})
+    to_close = []
+
+    for sym, pos in positions.items():
+        df = df_map.get(sym)
+        if df is None or df.empty:
+            continue
+
+        closes = close_series(df).tail(max(2, EXIT_CHECK_LOOKBACK))
+        last_price = float(closes.iloc[-1])
+
+        entry = float(pos.get("entry", last_price))
+        tp = float(pos.get("tp", 0) or 0)
+        sl = float(pos.get("sl", 0) or 0)
+        trail_pct = float(pos.get("trail_pct", 0) or 0)
+        hi_water = float(pos.get("hi_water", entry))
+
+        # hi-water aktualisieren
+        if last_price > hi_water:
+            hi_water = last_price
+
+        trail_stop = hi_water * (1 - trail_pct/100) if trail_pct > 0 else None
+
+        trigger = None
+        if tp and last_price >= tp:
+            trigger = "TP"
+        elif sl and last_price <= sl:
+            trigger = "SL"
+        elif trail_stop and last_price <= trail_stop:
+            trigger = "TRAIL"
+
+        # speichern
+        pos["hi_water"] = hi_water
+        positions[sym] = pos
+
+        if trigger:
+            print(f"[EXIT] {sym} trigger={trigger} last={last_price:.4f} "
+                  f"tp={tp or '-'} sl={sl or '-'} trail={trail_stop or '-'}")
+            to_close.append(sym)
+
+    # SELL für getriggerte Positionen
+    for sym in to_close:
+        qty = positions[sym].get("qty")
+        tp_send_sell(sym, qty)
+        # aus State entfernen
+        positions.pop(sym, None)
+
+    state["positions"] = positions
 
 
 # ========= JSON-Ausgabe fürs Dashboard =========
@@ -316,7 +410,8 @@ def run():
     now = datetime.now(timezone.utc)
     print(f"[CFG] TF={TIMEFRAME} BUY_RSI_MAX={BUY_RSI_MAX} BUY_DELTA_MIN={BUY_DELTA_MIN} "
           f"NEAR_BO%={NEAR_BREAKOUT_PCT} KI_MIN={KI_SCORE_MIN} "
-          f"SCORER={'on' if KI_SCORER_URL else 'off'} ANALYSE={'on' if KI_WEBHOOK_URL else 'off'}")
+          f"SCORER={'on' if KI_SCORER_URL else 'off'} ANALYSE={'on' if KI_WEBHOOK_URL else 'off'} "
+          f"BOT_EXITS={'on' if BOT_MANAGE_EXITS else 'off'}")
 
     if not is_us_extended_utc(now):
         print(f"[SKIP] Outside US extended session (UTC {now.isoformat()})")
@@ -329,9 +424,13 @@ def run():
         return
     tickers = [t.strip() for t in TICKERS_FILE.read_text().splitlines() if t.strip() and not t.startswith("#")]
 
+    # State laden
+    state = load_positions()
+
     print(f"[{now_utc_iso()}] Scan {len(tickers)} Symbole…")
 
     signals = []
+    df_map = {}
     for t in tickers:
         try:
             print(f"[{t}] downloading…")
@@ -340,10 +439,11 @@ def run():
                 print(f"[WARN] {t} empty df")
                 continue
 
+            df_map[t] = df
             sig = evaluate_ticker(df, t)
-            decided = sig["recommendation"]  # Guard
+            decided = sig["recommendation"]
 
-            # BUY → KI-Analyse (SL/TP/Trailing/Qty) + optional TP-Order
+            # BUY → KI-Analyse (SL/TP/Trailing/Qty) + TP-Order + State-Add
             if sig["recommendation"] == "BUY":
                 enriched = analyze_with_ki(sig)
                 if enriched:
@@ -355,7 +455,31 @@ def run():
                             sig[k] = enriched[k]
                 if not sig.get("qty_sized"):
                     sig["qty_sized"] = sig.get("qty", POSITION_QTY)
-                send_to_traderspost(sig)
+
+                # BUY an TradersPost
+                tp_send_buy(sig)
+
+                # ---- Position in State aufnehmen (für Bot-Exits) ----
+                if BOT_MANAGE_EXITS:
+                    entry = float(sig["price"])
+                    # Priorität: feste Preise > Prozent
+                    sl = float(sig.get("sl_price") or 0)
+                    tp = float(sig.get("tp_price") or 0)
+
+                    if not sl and sig.get("sl_percent"):
+                        sl = round(entry * (1 - float(sig["sl_percent"])/100), 4)
+                    if not tp and sig.get("tp_percent"):
+                        tp = round(entry * (1 + float(sig["tp_percent"])/100), 4)
+
+                    state["positions"][t] = {
+                        "qty": int(sig.get("qty_sized") or sig.get("qty") or POSITION_QTY),
+                        "entry": entry,
+                        "sl": sl or None,
+                        "tp": tp or None,
+                        "trail_pct": float(sig.get("trailing_percent") or 0) or None,
+                        "hi_water": entry
+                    }
+                    print(f"[STATE] add {t}: entry={entry} sl={state['positions'][t]['sl']} tp={state['positions'][t]['tp']} trail%={state['positions'][t]['trail_pct']}")
 
             if sig["recommendation"] != decided:
                 print(f"[WARN] {t}: recommendation changed from {decided} -> {sig['recommendation']} AFTER enrichment")
@@ -365,8 +489,16 @@ def run():
         except Exception as e:
             print(f"[ERR] {t} failed: {e}")
 
-        time.sleep(0.15)  # freundlich zu yfinance
+        time.sleep(0.12)  # freundlich zu yfinance
 
+    # ---- Bot-Exit-Engine prüfen (auf Basis der gerade geladenen Daten) ----
+    if BOT_MANAGE_EXITS and state.get("positions"):
+        update_and_check_exits(state, df_map)
+
+    # State speichern
+    save_positions(state)
+
+    # Dashboard schreiben
     write_signals(signals)
 
 
