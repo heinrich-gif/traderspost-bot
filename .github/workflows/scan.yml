@@ -1,0 +1,60 @@
+name: Scan -> KI -> Order (5 min)
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"     # alle 5 Minuten (UTC)
+  workflow_dispatch: {}       # manuell startbar
+
+jobs:
+  run-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore state cache
+        uses: actions/cache@v4
+        with:
+          path: state
+          key: state-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+          restore-keys: |
+            state-${{ runner.os }}-${{ github.ref_name }}-
+            state-${{ runner.os }}-
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Configure env
+        run: |
+          echo "KI_MODE=webhook" >> $GITHUB_ENV
+          echo "TIMEFRAME=5m" >> $GITHUB_ENV
+          echo "POSITION_QTY=10" >> $GITHUB_ENV
+          echo "RSI_LEN=14" >> $GITHUB_ENV
+          echo "EMA_FAST=50" >> $GITHUB_ENV
+          echo "EMA_SLOW=200" >> $GITHUB_ENV
+          echo "RSI_BUY_CROSS=30" >> $GITHUB_ENV
+          echo "RSI_SELL_CROSS=70" >> $GITHUB_ENV
+          echo "COOLDOWN_MIN=60" >> $GITHUB_ENV
+          echo "KI_WEBHOOK_URL=${{ secrets.KI_WEBHOOK_URL }}" >> $GITHUB_ENV
+          echo "TP_WEBHOOK_URL=${{ secrets.TP_WEBHOOK_URL }}" >> $GITHUB_ENV
+
+      - name: Run bot
+        run: |
+          python main.py
+
+      - name: Save state cache (after run)
+        if: always()
+        uses: actions/cache@v4
+        with:
+          path: state
+          key: state-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
