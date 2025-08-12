@@ -1,7 +1,6 @@
 name: Scan -> KI -> Order (alle 5 Min)
 
-on:
-  schedule:    
+on: 
   workflow_dispatch: {}      # manueller Start möglich
 
 concurrency:
