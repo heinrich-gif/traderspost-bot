@@ -1,0 +1,33 @@
+export default {
+  async fetch(request, env) {
+    if (request.method !== "POST") {
+      return new Response("POST only", { status: 405 });
+    }
+    const data = await request.json(); // { symbol, action, quantity, price? }
+
+    // 1) KI-Bewertung (nur Zahl zurückgeben)
+    const prompt = `
+Bewerte dieses Trading-Setup von 0 bis 100 (nur Zahl zurückgeben):
+Symbol: ${data.symbol}
+Aktion: ${data.action}
+Strategie: RSI-Cross + Trendfilter (EMA50>EMA200).
+Ab 60 Punkten gilt es als gutes Signal.`;
+
+    const aiRes = await env.AI.run("@cf/meta/llama-3.1-8b-instruct", { prompt });
+    const score = parseInt((aiRes.response || "0").match(/\d+/)?.[0] || "0", 10);
+
+    // 2) Zu schwach? → filtern
+    if (!Number.isFinite(score) || score < 60) {
+      return new Response(`filtered (${score})`, { status: 200 });
+    }
+
+    // 3) Weiterleiten an TradersPost
+    const r = await fetch(env.TP_WEBHOOK_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(data),
+    });
+
+    return new Response(await r.text(), { status: r.status });
+  }
+}
