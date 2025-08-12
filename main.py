@@ -11,7 +11,7 @@ def is_us_rth_utc(dt: datetime) -> bool:
     if wd >= 5:
         return False
     mins = dt.hour * 60 + dt.minute
-    return (13 * 60 + 30) <= mins < (20 * 60)
+    return (8 * 60 <= mins < 24 * 60) or (0 <= mins < 2 * 60)  # 08:00–23:59 + 00:00–01:59 UTC
 
 # ===== Config =====
 TIMEFRAME = os.getenv("TIMEFRAME", "5m")
@@ -70,8 +70,8 @@ def send_to_traderspost(ticker, side, price, rsi):
 # ===== Main Run =====
 def run():
     now_utc = datetime.utcnow().replace(tzinfo=timezone.utc)
-    if not is_us_rth_utc(now_utc):
-        print(f"[SKIP] Outside US RTH (now UTC {now_utc.isoformat()})")
+    if not is_us_extended_utc(now_utc):
+        print(f"[SKIP] Outside US extended session (now UTC {now_utc.isoformat()})")
         return
 
     tickers = [
