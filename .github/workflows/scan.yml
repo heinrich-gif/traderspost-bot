@@ -2,8 +2,8 @@ name: Scan -> KI -> Order (5 min)
 
 on:
   schedule:
-    - cron: "*/5 * * * *"     # alle 5 Minuten (UTC)
-  workflow_dispatch: {}       # manuell startbar
+    - cron: "*/5 * * * *"   # alle 5 Minuten (UTC) – läuft rund um die Uhr
+  workflow_dispatch: {}      # manueller Start möglich
 
 jobs:
   run-scan:
@@ -14,6 +14,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Show files
+        run: |
+          pwd
+          ls -la
+          echo "--- tickers.txt ---"
+          test -f tickers.txt && cat tickers.txt || echo "tickers.txt fehlt!"
 
       - name: Restore state cache
         uses: actions/cache@v4
@@ -37,19 +44,24 @@ jobs:
       - name: Configure env
         run: |
           echo "KI_MODE=webhook" >> $GITHUB_ENV
-          echo "TIMEFRAME=5m" >> $GITHUB_ENV
-          echo "POSITION_QTY=10" >> $GITHUB_ENV
-          echo "RSI_LEN=14" >> $GITHUB_ENV
-          echo "EMA_FAST=50" >> $GITHUB_ENV
-          echo "EMA_SLOW=200" >> $GITHUB_ENV
-          echo "RSI_BUY_CROSS=30" >> $GITHUB_ENV
-          echo "RSI_SELL_CROSS=70" >> $GITHUB_ENV
-          echo "COOLDOWN_MIN=60" >> $GITHUB_ENV
+          echo "TIMEFRAME=${{ vars.TIMEFRAME }}" >> $GITHUB_ENV
+          echo "POSITION_QTY=${{ vars.POSITION_QTY }}" >> $GITHUB_ENV
+          echo "RSI_LEN=${{ vars.RSI_LEN }}" >> $GITHUB_ENV
+          echo "EMA_FAST=${{ vars.EMA_FAST }}" >> $GITHUB_ENV
+          echo "EMA_SLOW=${{ vars.EMA_SLOW }}" >> $GITHUB_ENV
+          echo "RSI_BUY_CROSS=${{ vars.RSI_BUY_CROSS }}" >> $GITHUB_ENV
+          echo "RSI_SELL_CROSS=${{ vars.RSI_SELL_CROSS }}" >> $GITHUB_ENV
+          echo "COOLDOWN_MIN=${{ vars.COOLDOWN_MIN }}" >> $GITHUB_ENV
+          # Secrets
           echo "KI_WEBHOOK_URL=${{ secrets.KI_WEBHOOK_URL }}" >> $GITHUB_ENV
           echo "TP_WEBHOOK_URL=${{ secrets.TP_WEBHOOK_URL }}" >> $GITHUB_ENV
 
-      - name: Run bot
+      - name: Run bot (unbuffered)
+        env:
+          PYTHONUNBUFFERED: "1"
         run: |
+          python -V
+          echo ">>> Starting main.py …"
           python main.py
 
       - name: Save state cache (after run)
@@ -58,3 +70,9 @@ jobs:
         with:
           path: state
           key: state-${{ runner.os }}-${{ github.ref_name }}-${{ github.run_id }}
+
+# Tipp: Nur während US-Handelszeiten laufen lassen (spart Minuten):
+# on:
+#   schedule:
+#     - cron: "*/5 13-20 * * 1-5"   # Mo–Fr 13–20 UTC (Sommerzeit grob RTH)
+#   workflow_dispatch: {}
