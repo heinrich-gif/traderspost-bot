@@ -8,11 +8,11 @@ import yfinance as yf
 from bs4 import BeautifulSoup
 
 # -------- Parameter (per GitHub Vars leicht änderbar) --------
-PRICE_MAX = float(os.getenv("PENNY_PRICE_MAX", "5"))          # <= 5$
-REL_VOL_MIN = float(os.getenv("PENNY_REL_VOL_MIN", "2"))      # Relative Volume >= 2 (Finviz-Filter)
-AVG_VOL_MIN = int(os.getenv("PENNY_AVG_VOL_MIN", "500000"))   # Avg Volume >= 500k (Finviz-Filter)
+PRICE_MAX = float(os.getenv("PENNY_PRICE_MAX", "10"))          # <= 5$
+REL_VOL_MIN = float(os.getenv("PENNY_REL_VOL_MIN", "3"))      # Relative Volume >= 2 (Finviz-Filter)
+AVG_VOL_MIN = int(os.getenv("PENNY_AVG_VOL_MIN", "1000000"))   # Avg Volume >= 500k (Finviz-Filter)
 RANGE_PCT_MIN = float(os.getenv("PENNY_RANGE_PCT_MIN", "5"))  # Zusätzliche Validierung per yfinance
-MAX_TICKERS = int(os.getenv("PENNY_MAX_TICKERS", "30"))       # Begrenzung für tickers.txt
+MAX_TICKERS = int(os.getenv("PENNY_MAX_TICKERS", "50"))       # Begrenzung für tickers.txt
 YF_PERIOD = os.getenv("PENNY_YF_PERIOD", "5d")                # 5d/10d
 YF_INTERVAL = os.getenv("PENNY_YF_INTERVAL", "1d")            # 1d
 
