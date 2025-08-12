@@ -16,15 +16,16 @@ POSITION_QTY     = int(os.getenv("POSITION_QTY", "10"))          # Fallback, fal
 BREAKOUT_LEN     = int(os.getenv("BREAKOUT_LEN", "20"))
 MIN_PCT_MOVE     = float(os.getenv("MIN_PCT_MOVE", "5.0"))
 MIN_RSI_MOM      = float(os.getenv("MIN_RSI_MOM", "50.0"))
+NEAR_BREAKOUT_PCT= float(os.getenv("NEAR_BREAKOUT_PCT", "0.3"))  # Toleranz in %, z.B. 0.3
 
 # KI-Scoring (Badge/Filter)
-KI_SCORER_URL    = os.getenv("KI_SCORER_URL", "").strip()        # z. B. Cloudflare Scorer
-KI_SCORE_MIN     = int(os.getenv("KI_SCORE_MIN", "65"))          # BUY nur wenn Score >= MIN (sofern buy_raw True)
+KI_SCORER_URL    = os.getenv("KI_SCORER_URL", "").strip()
+KI_SCORE_MIN     = int(os.getenv("KI_SCORE_MIN", "65"))
 
 # KI-Analyse (SL/TP/Trailing/Qty)
-KI_WEBHOOK_URL   = os.getenv("KI_WEBHOOK_URL", "").strip()       # ← dein neuer KI-Analyse-Worker
-ACCOUNT_EQUITY   = float(os.getenv("ACCOUNT_EQUITY", "10000"))   # für Positions-sizing im Worker
-RISK_PCT         = float(os.getenv("RISK_PCT", "1"))             # Risiko pro Trade in %
+KI_WEBHOOK_URL   = os.getenv("KI_WEBHOOK_URL", "").strip()
+ACCOUNT_EQUITY   = float(os.getenv("ACCOUNT_EQUITY", "10000"))
+RISK_PCT         = float(os.getenv("RISK_PCT", "1"))
 
 # TradersPost (optional)
 TP_WEBHOOK_URL   = os.getenv("TP_WEBHOOK_URL", "").strip()
@@ -82,7 +83,8 @@ def rsi(series: pd.Series, length: int = 14) -> pd.Series:
 
 def download_df(ticker: str, period="60d", interval="5m") -> pd.DataFrame:
     """
-    Stabiler Download ohne MultiIndex; auto_adjust=True gegen Splits/Dividenden.
+    Stabiler Download; auto_adjust=True gegen Splits/Dividenden.
+    prepost=True: Extended Hours (Pre/After) einbeziehen.
     Passt period automatisch für 1m an.
     """
     if interval == "1m":
@@ -93,6 +95,7 @@ def download_df(ticker: str, period="60d", interval="5m") -> pd.DataFrame:
         interval=interval,
         progress=False,
         auto_adjust=True,
+        prepost=True,              # <<< PATCH 1: Extended Hours laden
         group_by="column",
         threads=False,
     )
@@ -101,10 +104,6 @@ def download_df(ticker: str, period="60d", interval="5m") -> pd.DataFrame:
 
 # ========= KI-Scoring (Badge / BUY-Filter) =========
 def score_with_ki(symbol: str, price: float, rsi_now: float, pct_move: float, breakout: bool, momentum: bool):
-    """
-    Fragt optional den KI_SCORER_URL ab und gibt (score:int|None, pass:bool) zurück.
-    pass=True, wenn (kein Score nötig) oder Score >= KI_SCORE_MIN, sonst False.
-    """
     ki_score, ki_pass = None, True
     if not KI_SCORER_URL:
         return ki_score, ki_pass
@@ -127,23 +126,13 @@ def score_with_ki(symbol: str, price: float, rsi_now: float, pct_move: float, br
                 ki_score = int(j["score"])
     except Exception as e:
         print(f"[KI] scorer error {symbol}: {e}")
-
-    # Score beeinflusst nur BUY, wenn das Roh-Setup grundsätzlich passt (entschieden im Aufrufer)
-    return ki_score, ki_pass  # ki_pass wird im Aufrufer gesetzt, wenn buy_raw True und score vorhanden
+    return ki_score, ki_pass
 
 
 # ========= KI-Analyse (SL/TP/Trailing/Qty) =========
 def analyze_with_ki(signal: dict) -> dict:
-    """
-    Ruft den KI_WEBHOOK_URL Worker auf.
-    Erwartet Response-Format:
-      { analyzed_at: "...", result: { ...enriched signal... } }
-    oder bei Array: { result: [ ... ] }
-    Gibt das angereicherte Einzel-Resultat zurück; bei Fehler -> {}.
-    """
     if not KI_WEBHOOK_URL:
         return {}
-
     payload = {
         "symbol": signal["symbol"],
         "price": signal["price"],
@@ -155,7 +144,6 @@ def analyze_with_ki(signal: dict) -> dict:
         "equity": ACCOUNT_EQUITY,
         "risk_pct": RISK_PCT,
     }
-
     try:
         r = requests.post(KI_WEBHOOK_URL, json=payload, timeout=15)
         if not r.ok:
@@ -167,7 +155,6 @@ def analyze_with_ki(signal: dict) -> dict:
             return res[0]
         if isinstance(res, dict):
             return res
-        # Falls Worker direkt das angereicherte Dict zurückgibt
         if isinstance(data, dict) and "sl_price" in data:
             return data
         return {}
@@ -178,6 +165,20 @@ def analyze_with_ki(signal: dict) -> dict:
 
 # ========= Strategie =========
 def evaluate_ticker(df: pd.DataFrame, ticker: str) -> dict:
+    # ---- Stale Check (PATCH 3) ----
+    try:
+        last_ts = df.index[-1]
+        if hasattr(last_ts, "to_pydatetime"):
+            last_ts = last_ts.to_pydatetime()
+        if last_ts.tzinfo is None:
+            # yfinance liefert manchmal naive UTC-Zeiten
+            last_ts = last_ts.replace(tzinfo=timezone.utc)
+        age_min = (datetime.now(timezone.utc) - last_ts).total_seconds() / 60.0
+        if age_min > 8:
+            print(f"[WARN] {ticker} stale data ({age_min:.1f} min alt)")
+    except Exception:
+        pass
+
     c = close_series(df)
     h = high_series(df)
     if c.empty or h.empty or len(c) < 3:
@@ -186,14 +187,22 @@ def evaluate_ticker(df: pd.DataFrame, ticker: str) -> dict:
     price = float(c.iloc[-1])
     prev_close = float(c.iloc[-2])
     pct_move = (price - prev_close) / prev_close * 100.0 if prev_close else 0.0
-    prev_high = float(h.tail(BREAKOUT_LEN).max())
-    rsi_now = float(rsi(c).iloc[-1])
 
-    breakout = price > prev_high
+    # ---- PrevHigh OHNE aktuelle Kerze + Toleranz (PATCH 2) ----
+    window = max(1, BREAKOUT_LEN)
+    if len(h) > window:
+        prev_high_raw = float(h.iloc[-(window+1):-1].max())
+    else:
+        prev_high_raw = float(h.iloc[:-1].max()) if len(h) > 1 else float(h.max())
+    tolerance = prev_high_raw * (NEAR_BREAKOUT_PCT / 100.0)
+    prev_high = prev_high_raw
+    breakout = (price >= prev_high_raw - tolerance)
+
+    rsi_now = float(rsi(c).iloc[-1])
     momentum = rsi_now >= MIN_RSI_MOM
     buy_raw  = breakout and momentum and (pct_move >= MIN_PCT_MOVE)
 
-    # KI-Score immer berechnen (für Anzeige), aber BUY nur filtern, wenn buy_raw True
+    # KI-Score (für Badge immer berechnen; BUY nur filtern, wenn buy_raw True)
     ki_score, _ = score_with_ki(ticker, price, rsi_now, pct_move, breakout, momentum)
     ki_pass = True
     if buy_raw and (ki_score is not None):
@@ -206,7 +215,9 @@ def evaluate_ticker(df: pd.DataFrame, ticker: str) -> dict:
         "price": round(price, 4),
         "rsi": round(rsi_now, 2),
         "pct_move": round(pct_move, 2),
-        "prev_high_n": BREAKOUT_LEN,
+        "prev_high_n": window,
+        "prev_high_value": round(prev_high, 4),
+        "near_breakout_pct": NEAR_BREAKOUT_PCT,
         "breakout": bool(breakout),
         "momentum": bool(momentum),
         "recommendation": recommendation,
@@ -215,7 +226,7 @@ def evaluate_ticker(df: pd.DataFrame, ticker: str) -> dict:
         "ki_pass": ki_pass,
         "timestamp": now_utc_iso(),
         "spark": last_n_closes(df, 50),
-        # Platzhalter für KI-Analyse (werden bei BUY gefüllt)
+        # Platzhalter für KI-Analyse
         "sl_percent": None,
         "tp_percent": None,
         "trailing_percent": None,
@@ -226,7 +237,7 @@ def evaluate_ticker(df: pd.DataFrame, ticker: str) -> dict:
 
     print(
         f"[{ticker}] price={price:.2f} rsi={rsi_now:.2f} Δ%={pct_move:.2f} "
-        f"prevHigh{BREAKOUT_LEN}={prev_high:.4f} breakout={breakout} mom={momentum} "
+        f"prevHigh{window}={prev_high:.4f} tol={NEAR_BREAKOUT_PCT:.3f}% breakout={breakout} mom={momentum} "
         f"ki={ki_score} pass={ki_pass} -> {recommendation}"
     )
     return rec
@@ -234,16 +245,14 @@ def evaluate_ticker(df: pd.DataFrame, ticker: str) -> dict:
 
 # ========= TradersPost Versand =========
 def send_to_traderspost(sig: dict):
-    if not TP_WEBHOOK_URL:
+    if not TP_WEBHOOK_URL or sig["recommendation"] != "BUY":
         return
-    # Nutze angereicherte Werte, wenn vorhanden
     qty = int(sig.get("qty_sized") or sig.get("qty") or POSITION_QTY)
     payload = {
         "symbol": sig["symbol"],
         "action": "buy",
         "quantity": qty,
         "price": sig["price"],
-        # Zusatz-Infos – falls der TP-Webhook sie versteht, werden sie genutzt; sonst ignoriert.
         "tp_percent": sig.get("tp_percent"),
         "sl_percent": sig.get("sl_percent"),
         "trailing_percent": sig.get("trailing_percent"),
@@ -308,15 +317,14 @@ def run():
             if sig["recommendation"] == "BUY":
                 enriched = analyze_with_ki(sig)
                 if enriched:
-                    # Mache die relevanten Felder in sig sichtbar
-                    for k in ("sl_percent","tp_percent","trailing_percent","sl_price","tp_price","qty_sized","equity_used","risk_pct_used","ki_score","ki_min","ki_pass","rationale"):
+                    for k in ("sl_percent","tp_percent","trailing_percent",
+                              "sl_price","tp_price","qty_sized",
+                              "equity_used","risk_pct_used",
+                              "ki_score","ki_min","ki_pass","rationale"):
                         if k in enriched:
                             sig[k] = enriched[k]
-                # Falls keine qty_sized geliefert → Fallback qty
                 if not sig.get("qty_sized"):
                     sig["qty_sized"] = sig.get("qty", POSITION_QTY)
-
-                # Optional: Order an TradersPost schicken
                 send_to_traderspost(sig)
 
             signals.append(sig)
