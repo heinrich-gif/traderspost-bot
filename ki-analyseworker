@@ -1,0 +1,211 @@
+// KI-Analyse Worker
+// - POST /           : ein Signal oder Array von Signalen analysieren
+// - GET  /health     : Healthcheck
+//
+// Env Vars (Workers -> Settings -> Variables):
+//   SL_PCT            (z.B. "9")          // Stop-Loss %
+//   TP_PCT            (z.B. "25")         // Take-Profit %
+//   TRAIL_PCT         (z.B. "6")          // Trailing Stop %
+//   ACCOUNT_EQUITY    (z.B. "10000")      // Konto-Equity für Positionsgröße (Fallback)
+//   RISK_PCT          (z.B. "1")          // Risiko pro Trade in % vom Equity (Fallback)
+//   MAX_QTY           (z.B. "2000")       // optional: Shares-Deckel
+//   USE_OPENAI        ("0"|"1")           // 1 = zusätzliche Begründung via OpenAI
+//   OPENAI_API_KEY    (Secret)            // nur nötig, wenn USE_OPENAI=1
+//   OPENAI_MODEL      (z.B. "gpt-4o-mini")
+//   KI_SCORE_MIN      (z.B. "65")         // für Badge/Prädikat in der Antwort
+
+export default {
+  async fetch(request, env) {
+    // CORS / Health
+    if (request.method === "OPTIONS") {
+      return new Response(null, { headers: corsHeaders() });
+    }
+    const url = new URL(request.url);
+    if (request.method === "GET" && url.pathname === "/health") {
+      return json({ ok: true, time: new Date().toISOString() });
+    }
+    if (request.method !== "POST") {
+      return json({ error: "Only POST accepted" }, 405);
+    }
+
+    let body;
+    try {
+      body = await request.json(); // Signal oder Array
+    } catch {
+      return json({ error: "Invalid JSON" }, 400);
+    }
+
+    const cfg = loadConfig(env);
+    const analyzeOne = (sig) => analyzeSignal(sig, cfg);
+
+    let result;
+    if (Array.isArray(body)) {
+      result = await Promise.all(body.map(async (s) => await analyzeOne(s)));
+    } else {
+      result = await analyzeOne(body);
+    }
+
+    return json({ analyzed_at: new Date().toISOString(), result }, 200);
+  }
+};
+
+// ---------- Helpers ----------
+function corsHeaders() {
+  return {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, User-Agent"
+  };
+}
+
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "content-type": "application/json", ...corsHeaders() }
+  });
+}
+
+function loadConfig(env) {
+  return {
+    slPct: num(env.SL_PCT, 9),
+    tpPct: num(env.TP_PCT, 25),
+    trailPct: num(env.TRAIL_PCT, 6),
+    equityDefault: num(env.ACCOUNT_EQUITY, 10000),
+    riskPctDefault: num(env.RISK_PCT, 1),
+    maxQty: num(env.MAX_QTY, Infinity),
+    useOpenAI: String(env.USE_OPENAI || "0") === "1",
+    openaiKey: env.OPENAI_API_KEY || "",
+    openaiModel: env.OPENAI_MODEL || "gpt-4o-mini",
+    kiScoreMin: num(env.KI_SCORE_MIN, 65),
+  };
+}
+
+function num(v, fallback) {
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+async function analyzeSignal(sig, cfg) {
+  // erwartete Felder (mindestens):
+  // { symbol, price, recommendation, rsi, pct_move, breakout, momentum, qty?, equity?, risk_pct? }
+  const symbol = String(sig.symbol || sig.ticker || "").toUpperCase();
+  const price = num(sig.price, NaN);
+  const rec = String(sig.recommendation || sig.action || "HOLD").toUpperCase();
+
+  if (!symbol || !Number.isFinite(price)) {
+    return { ...sig, error: "symbol/price missing or invalid" };
+  }
+
+  // Risk-Parameter
+  const equity = Number.isFinite(sig.equity) ? sig.equity : cfg.equityDefault;
+  const riskPct = Number.isFinite(sig.risk_pct) ? sig.risk_pct : cfg.riskPctDefault;
+
+  // SL/TP/Trailing
+  const slPrice = round(price * (1 - cfg.slPct / 100), 4);
+  const tpPrice = round(price * (1 + cfg.tpPct / 100), 4);
+  const trailPct = cfg.trailPct;
+
+  // Positionsgröße (klassisch: Risiko in $ / Stop-Abstand)
+  const stopDist = Math.max(price - slPrice, 0.0001);
+  const riskDollar = equity * (riskPct / 100);
+  let qty = Math.floor(riskDollar / stopDist);
+  if (!Number.isFinite(qty) || qty <= 0) qty = 0;
+  if (qty > cfg.maxQty) qty = cfg.maxQty;
+
+  // Prädikat
+  const kiMin = cfg.kiScoreMin;
+  let score = null, rationale = null, ki_pass = true;
+
+  if (cfg.useOpenAI && cfg.openaiKey) {
+    try {
+      const { score: s, rationale: r } = await openAiScore(
+        {
+          symbol,
+          price,
+          rsi: sig.rsi,
+          pct_move: sig.pct_move ?? sig.pctChange,
+          breakout: !!sig.breakout,
+          momentum: !!sig.momentum,
+          baseline: rec
+        },
+        cfg
+      );
+      if (Number.isFinite(s)) score = Math.max(0, Math.min(100, Math.round(s)));
+      if (typeof r === "string") rationale = r;
+      if (rec === "BUY" && Number.isFinite(score)) {
+        ki_pass = score >= kiMin;
+      }
+    } catch (e) {
+      // Falls OpenAI knallt → ignorieren, aber alles andere liefern
+      rationale = `openai_error: ${String(e)}`;
+    }
+  }
+
+  // finale Handlungsempfehlung: KI darf BUY auf HOLD downgraden
+  const finalRec = (rec === "BUY" && ki_pass) ? "BUY" : (rec === "BUY" ? "HOLD" : rec);
+
+  return {
+    ...sig,
+    symbol,
+    price: round(price, 4),
+    recommendation_in: rec,
+    recommendation: finalRec,
+    sl_percent: cfg.slPct,
+    tp_percent: cfg.tpPct,
+    trailing_percent: trailPct,
+    sl_price: slPrice,
+    tp_price: tpPrice,
+    qty_sized: qty,
+    equity_used: equity,
+    risk_pct_used: riskPct,
+    ki_score: score,
+    ki_min: kiMin,
+    ki_pass,
+    rationale
+  };
+}
+
+function round(x, d = 2) {
+  const p = Math.pow(10, d);
+  return Math.round((x + Number.EPSILON) * p) / p;
+}
+
+async function openAiScore(payload, cfg) {
+  const prompt = `
+Bewerte dieses kurzfristige Breakout-/Momentum-Setup mit einer Zahl 0..100 (nur Zahl) und gib danach in einem Satz eine kurze Begründung:
+Ticker: ${payload.symbol}
+Preis: ${payload.price}
+RSI(14): ${payload.rsi}
+Δ%: ${payload.pct_move}
+Breakout: ${payload.breakout}
+Momentum: ${payload.momentum}
+Baseline-Empfehlung: ${payload.baseline}
+
+Erst Zeile 1 NUR die Zahl, Zeile 2 EIN Satz (max. 20 Worte).`;
+
+  const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${cfg.openaiKey}`,
+      "Content-Type": "application/json",
+      "User-Agent": "ki-analyse-worker"
+    },
+    body: JSON.stringify({
+      model: cfg.openaiModel,
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.2,
+      max_tokens: 30
+    })
+  });
+
+  if (!resp.ok) {
+    throw new Error(`OpenAI ${resp.status}: ${await resp.text()}`);
+  }
+
+  const data = await resp.json();
+  const content = (data?.choices?.[0]?.message?.content || "").trim();
+  const [line1, line2] = content.split("\n");
+  const score = parseInt((line1 || "").match(/\d{1,3}/)?.[0] || "0", 10);
+  const rationale = (line2 || "").trim();
+  return { score, rationale };
+}
