@@ -1,6 +1,6 @@
 [
   {
-    "timestamp": "2025-08-14T21:40:34.315343+00:00",
+    "timestamp": "2025-08-14T21:43:43.750020+00:00",
     "symbol": "EVEX",
     "price": 4.41,
     "pct_move": -0.23,
@@ -66,7 +66,7 @@
     ]
   },
   {
-    "timestamp": "2025-08-14T21:40:34.465793+00:00",
+    "timestamp": "2025-08-14T21:43:43.905107+00:00",
     "symbol": "RERE",
     "price": 4.17,
     "pct_move": 0.0,
@@ -132,16 +132,16 @@
     ]
   },
   {
-    "timestamp": "2025-08-14T21:40:34.632342+00:00",
+    "timestamp": "2025-08-14T21:43:44.071720+00:00",
     "symbol": "ETHD",
-    "price": 3.76,
-    "pct_move": -0.26,
-    "day_change": 10.59,
-    "rsi": 66.69,
+    "price": 3.77,
+    "pct_move": 0.01,
+    "day_change": 10.88,
+    "rsi": 69.57,
     "breakout": true,
     "momentum": false,
     "prev_high_n": 20,
-    "prev_high_value": 3.7698,
+    "prev_high_value": 3.78,
     "near_breakout_pct": 0.3,
     "recommendation": "HOLD",
     "spark": [
@@ -194,24 +194,23 @@
       3.72,
       3.72,
       3.7698,
-      3.76
+      3.77
     ]
   },
   {
-    "timestamp": "2025-08-14T21:40:35.872810+00:00",
+    "timestamp": "2025-08-14T21:43:44.261817+00:00",
     "symbol": "MSOS",
-    "price": 4.989,
-    "pct_move": -0.02,
-    "day_change": -4.24,
-    "rsi": 57.8,
+    "price": 4.98,
+    "pct_move": -0.18,
+    "day_change": -4.41,
+    "rsi": 40.08,
     "breakout": false,
     "momentum": false,
     "prev_high_n": 20,
-    "prev_high_value": 5.026,
+    "prev_high_value": 5.0,
     "near_breakout_pct": 0.3,
     "recommendation": "HOLD",
     "spark": [
-      5.27,
       5.263256,
       5.275,
       5.2599,
@@ -260,11 +259,12 @@
       4.9993,
       4.9999,
       4.9899,
-      4.989
+      4.989,
+      4.98
     ]
   },
   {
-    "timestamp": "2025-08-14T21:40:36.091291+00:00",
+    "timestamp": "2025-08-14T21:43:44.408426+00:00",
     "symbol": "CCO",
     "price": 1.13,
     "pct_move": 0.0,
@@ -330,16 +330,16 @@
     ]
   },
   {
-    "timestamp": "2025-08-14T21:40:36.232803+00:00",
+    "timestamp": "2025-08-14T21:43:44.560962+00:00",
     "symbol": "VTEX",
-    "price": 4.0183,
-    "pct_move": 0.46,
-    "day_change": -4.33,
-    "rsi": 70.56,
-    "breakout": true,
+    "price": 4.0,
+    "pct_move": 1.01,
+    "day_change": -4.76,
+    "rsi": 64.37,
+    "breakout": false,
     "momentum": true,
     "prev_high_n": 20,
-    "prev_high_value": 4.0183,
+    "prev_high_value": 4.015,
     "near_breakout_pct": 0.3,
     "recommendation": "HOLD",
     "spark": [
@@ -391,12 +391,12 @@
       3.96,
       3.96,
       3.96,
-      4.0,
-      4.0183
+      3.96,
+      4.0
     ]
   },
   {
-    "timestamp": "2025-08-14T21:40:36.400954+00:00",
+    "timestamp": "2025-08-14T21:43:44.703110+00:00",
     "symbol": "LANV",
     "price": 2.27,
     "pct_move": 0.0,
@@ -462,20 +462,19 @@
     ]
   },
   {
-    "timestamp": "2025-08-14T21:40:36.702318+00:00",
+    "timestamp": "2025-08-14T21:43:44.898700+00:00",
     "symbol": "AACG",
-    "price": 2.14,
-    "pct_move": 1.9,
-    "day_change": 13.83,
-    "rsi": 54.97,
-    "breakout": true,
-    "momentum": true,
+    "price": 2.13,
+    "pct_move": -0.47,
+    "day_change": 13.3,
+    "rsi": 53.7,
+    "breakout": false,
+    "momentum": false,
     "prev_high_n": 20,
     "prev_high_value": 2.14,
     "near_breakout_pct": 0.3,
-    "recommendation": "BUY",
+    "recommendation": "HOLD",
     "spark": [
-      1.979,
       2.0,
       2.0061,
       1.981,
@@ -524,12 +523,12 @@
       2.13,
       2.13,
       2.1,
-      2.14
-    ],
-    "qty_sized": 467
+      2.14,
+      2.13
+    ]
   },
   {
-    "timestamp": "2025-08-14T21:40:48.258746+00:00",
+    "timestamp": "2025-08-14T21:43:45.161782+00:00",
     "symbol": "AAME",
     "price": 2.94,
     "pct_move": -2.65,
@@ -595,7 +594,7 @@
     ]
   },
   {
-    "timestamp": "2025-08-14T21:40:48.449001+00:00",
+    "timestamp": "2025-08-14T21:43:45.392525+00:00",
     "symbol": "ABAT",
     "price": 2.66,
     "pct_move": 0.76,
@@ -661,7 +660,7 @@
     ]
   },
   {
-    "timestamp": "2025-08-14T21:40:48.695169+00:00",
+    "timestamp": "2025-08-14T21:43:45.576123+00:00",
     "symbol": "ABCL",
     "price": 4.54,
     "pct_move": -0.2,
@@ -727,7 +726,7 @@
     ]
   },
   {
-    "timestamp": "2025-08-14T21:40:48.975275+00:00",
+    "timestamp": "2025-08-14T21:43:45.886432+00:00",
     "symbol": "ABEV",
     "price": 2.19,
     "pct_move": 0.0,
@@ -793,7 +792,7 @@
     ]
   },
   {
-    "timestamp": "2025-08-14T21:40:49.225117+00:00",
+    "timestamp": "2025-08-14T21:43:46.122432+00:00",
     "symbol": "ABLV",
     "price": 0.871,
     "pct_move": -0.14,
@@ -849,7 +848,7 @@
     ]
   },
   {
-    "timestamp": "2025-08-14T21:40:49.489673+00:00",
+    "timestamp": "2025-08-14T21:43:46.307175+00:00",
     "symbol": "ABOS",
     "price": 1.4,
     "pct_move": 0.0,
@@ -915,7 +914,7 @@
     ]
   },
   {
-    "timestamp": "2025-08-14T21:40:49.743101+00:00",
+    "timestamp": "2025-08-14T21:43:46.494025+00:00",
     "symbol": "ABP",
     "price": 0.2511,
     "pct_move": -0.04,
@@ -981,7 +980,7 @@
     ]
   },
   {
-    "timestamp": "2025-08-14T21:40:49.984345+00:00",
+    "timestamp": "2025-08-14T21:43:46.681366+00:00",
     "symbol": "ABSI",
     "price": 2.9804,
     "pct_move": -0.65,
@@ -1047,7 +1046,7 @@
     ]
   },
   {
-    "timestamp": "2025-08-14T21:40:50.173263+00:00",
+    "timestamp": "2025-08-14T21:43:46.864883+00:00",
     "symbol": "ABTS",
     "price": 4.1184,
     "pct_move": -0.76,
@@ -1113,7 +1112,7 @@
     ]
   },
   {
-    "timestamp": "2025-08-14T21:40:50.352990+00:00",
+    "timestamp": "2025-08-14T21:43:47.052994+00:00",
     "symbol": "ABUS",
     "price": 3.32,
     "pct_move": -1.48,
@@ -1179,7 +1178,7 @@
     ]
   },
   {
-    "timestamp": "2025-08-14T21:40:50.537253+00:00",
+    "timestamp": "2025-08-14T21:43:47.240164+00:00",
     "symbol": "ABVC",
     "price": 3.12,
     "pct_move": 2.63,
@@ -1245,12 +1244,12 @@
     ]
   },
   {
-    "timestamp": "2025-08-14T21:40:50.775635+00:00",
+    "timestamp": "2025-08-14T21:43:47.460119+00:00",
     "symbol": "ABVE",
-    "price": 1.93,
-    "pct_move": 0.0,
-    "day_change": -4.93,
-    "rsi": 48.3,
+    "price": 1.92,
+    "pct_move": -0.52,
+    "day_change": -5.42,
+    "rsi": 46.95,
     "breakout": false,
     "momentum": false,
     "prev_high_n": 20,
@@ -1307,11 +1306,11 @@
       1.93,
       1.93,
       1.93,
-      1.93
+      1.92
     ]
   },
   {
-    "timestamp": "2025-08-14T21:40:51.011351+00:00",
+    "timestamp": "2025-08-14T21:43:47.675599+00:00",
     "symbol": "ACCO",
     "price": 3.91,
     "pct_move": 0.0,
@@ -1377,12 +1376,12 @@
     ]
   },
   {
-    "timestamp": "2025-08-14T21:40:51.243572+00:00",
+    "timestamp": "2025-08-14T21:43:47.861341+00:00",
     "symbol": "ACDC",
     "price": 3.5099,
-    "pct_move": -0.0,
+    "pct_move": 0.0,
     "day_change": -3.31,
-    "rsi": 49.96,
+    "rsi": 39.98,
     "breakout": false,
     "momentum": false,
     "prev_high_n": 20,
@@ -1390,7 +1389,6 @@
     "near_breakout_pct": 0.3,
     "recommendation": "HOLD",
     "spark": [
-      3.5401,
       3.545,
       3.55,
       3.555,
@@ -1439,11 +1437,12 @@
       3.49,
       3.5097,
       3.51,
+      3.5099,
       3.5099
     ]
   },
   {
-    "timestamp": "2025-08-14T21:40:51.483277+00:00",
+    "timestamp": "2025-08-14T21:43:48.055354+00:00",
     "symbol": "ACET",
     "price": 0.6498,
     "pct_move": 0.12,
@@ -1509,7 +1508,7 @@
     ]
   },
   {
-    "timestamp": "2025-08-14T21:40:51.698352+00:00",
+    "timestamp": "2025-08-14T21:43:48.313361+00:00",
     "symbol": "ACHV",
     "price": 2.55,
     "pct_move": 0.39,
@@ -1575,7 +1574,7 @@
     ]
   },
   {
-    "timestamp": "2025-08-14T21:40:51.922444+00:00",
+    "timestamp": "2025-08-14T21:43:48.571486+00:00",
     "symbol": "ACIU",
     "price": 2.13,
     "pct_move": 0.0,
@@ -1641,7 +1640,7 @@
     ]
   },
   {
-    "timestamp": "2025-08-14T21:40:52.139238+00:00",
+    "timestamp": "2025-08-14T21:43:48.794161+00:00",
     "symbol": "ACRE",
     "price": 4.52,
     "pct_move": 0.0,
@@ -1707,7 +1706,7 @@
     ]
   },
   {
-    "timestamp": "2025-08-14T21:40:52.373838+00:00",
+    "timestamp": "2025-08-14T21:43:49.027316+00:00",
     "symbol": "ACRS",
     "price": 1.6719,
     "pct_move": 0.11,
